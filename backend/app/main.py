@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import Body, FastAPI
+from fastapi import Body, FastAPI, HTTPException
 from sqlalchemy import text
 
 from app.core.database import Base, SessionLocal, engine
@@ -65,3 +65,18 @@ def get_devices() -> list[dict[str, object]]:
             }
             for device in devices
         ]
+
+
+@app.get("/devices/{id}")
+def get_device(id: int) -> dict[str, object]:
+    with SessionLocal() as db:
+        device = db.query(Device).filter(Device.id == id).first()
+        if device is None:
+            raise HTTPException(status_code=404, detail="Device not found")
+        return {
+            "id": device.id,
+            "name": device.name,
+            "cpu": device.cpu,
+            "gpu": device.gpu,
+            "created_at": device.created_at,
+        }
