@@ -49,3 +49,19 @@ def create_device(
             "gpu": device.gpu,
             "created_at": device.created_at,
         }
+
+
+@app.get("/devices")
+def get_devices() -> list[dict[str, object]]:
+    with SessionLocal() as db:
+        devices = db.query(Device).all()
+        return [
+            {
+                "id": device.id,
+                "name": device.name,
+                "cpu": device.cpu,
+                "gpu": device.gpu,
+                "created_at": device.created_at,
+            }
+            for device in devices
+        ]
