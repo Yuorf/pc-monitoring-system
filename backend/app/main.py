@@ -80,3 +80,39 @@ def get_device(id: int) -> dict[str, object]:
             "gpu": device.gpu,
             "created_at": device.created_at,
         }
+
+
+@app.put("/devices/{id}")
+def update_device(
+    id: int,
+    name: str = Body(...),
+    cpu: str = Body(...),
+    gpu: str = Body(...),
+) -> dict[str, object]:
+    with SessionLocal() as db:
+        device = db.query(Device).filter(Device.id == id).first()
+        if device is None:
+            raise HTTPException(status_code=404, detail="Device not found")
+        device.name = name
+        device.cpu = cpu
+        device.gpu = gpu
+        db.commit()
+        db.refresh(device)
+        return {
+            "id": device.id,
+            "name": device.name,
+            "cpu": device.cpu,
+            "gpu": device.gpu,
+            "created_at": device.created_at,
+        }
+
+
+@app.delete("/devices/{id}")
+def delete_device(id: int) -> dict[str, str]:
+    with SessionLocal() as db:
+        device = db.query(Device).filter(Device.id == id).first()
+        if device is None:
+            raise HTTPException(status_code=404, detail="Device not found")
+        db.delete(device)
+        db.commit()
+        return {"message": "Device deleted successfully"}
