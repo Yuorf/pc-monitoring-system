@@ -7,6 +7,7 @@ from app.core.database import Base, SessionLocal, engine
 from app.core.config import settings
 from app.models.device import Device
 from app.models.measurement import Measurement
+from app.services.system_metrics import collect_current_metrics
 
 app = FastAPI(title=settings.APP_NAME)
 
@@ -25,6 +26,11 @@ def startup() -> None:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/metrics/current")
+def get_current_metrics() -> dict[str, float]:
+    return collect_current_metrics()
 
 
 @app.post("/devices")
