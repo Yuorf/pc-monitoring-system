@@ -32,7 +32,7 @@ async def background_metrics_collector() -> None:
                 db.add(measurement)
                 db.commit()
 
-        await asyncio.sleep(10)
+        await asyncio.sleep(settings.METRICS_COLLECTION_INTERVAL_SECONDS)
 
 
 @app.on_event("startup")

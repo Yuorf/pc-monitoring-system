@@ -3,14 +3,26 @@ from app.models.measurement import Measurement
 
 def analyze_measurement(measurement: Measurement) -> dict[str, object]:
     warnings = []
-    if measurement.cpu_usage >= 85:
+    if measurement.cpu_usage >= 95:
+        warnings.append("Critical CPU usage")
+    elif measurement.cpu_usage >= 85:
         warnings.append("High CPU usage")
-    if measurement.ram_usage >= 85:
+    if measurement.ram_usage >= 95:
+        warnings.append("Critical RAM usage")
+    elif measurement.ram_usage >= 85:
         warnings.append("High RAM usage")
-    if measurement.disk_usage >= 90:
+    if measurement.disk_usage >= 97:
+        warnings.append("Critical disk usage")
+    elif measurement.disk_usage >= 90:
         warnings.append("High disk usage")
 
+    status = "ok"
+    if any(warning.startswith("Critical") for warning in warnings):
+        status = "critical"
+    elif warnings:
+        status = "warning"
+
     return {
-        "status": "warning" if warnings else "ok",
+        "status": status,
         "warnings": warnings,
     }
