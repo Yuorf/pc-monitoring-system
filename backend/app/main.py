@@ -121,6 +121,34 @@ def create_measurement(
         }
 
 
+@app.post("/devices/{id}/measurements/collect")
+def collect_measurement(id: int) -> dict[str, object]:
+    with SessionLocal() as db:
+        device = db.query(Device).filter(Device.id == id).first()
+        if device is None:
+            raise HTTPException(status_code=404, detail="Device not found")
+
+        metrics = collect_current_metrics()
+        measurement = Measurement(
+            device_id=id,
+            cpu_usage=metrics["cpu_usage"],
+            ram_usage=metrics["ram_usage"],
+            disk_usage=metrics["disk_usage"],
+            recorded_at=datetime.utcnow(),
+        )
+        db.add(measurement)
+        db.commit()
+        db.refresh(measurement)
+        return {
+            "id": measurement.id,
+            "device_id": measurement.device_id,
+            "cpu_usage": measurement.cpu_usage,
+            "ram_usage": measurement.ram_usage,
+            "disk_usage": measurement.disk_usage,
+            "recorded_at": measurement.recorded_at,
+        }
+
+
 @app.get("/devices/{id}/measurements")
 def get_measurements(id: int) -> list[dict[str, object]]:
     with SessionLocal() as db:
