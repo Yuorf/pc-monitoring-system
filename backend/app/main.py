@@ -333,10 +333,19 @@ def get_device_warnings(id: int) -> dict[str, object]:
             raise HTTPException(status_code=404, detail="Measurements not found")
 
         warning_analysis = analyze_measurement(measurement)
+        load_values = [
+            measurement.cpu_usage,
+            measurement.ram_usage,
+            measurement.disk_usage,
+        ]
+        if measurement.gpu_usage is not None:
+            load_values.append(measurement.gpu_usage)
+        health_score = 100 - (sum(load_values) / len(load_values))
 
         return {
             "device_id": id,
             "status": warning_analysis["status"],
+            "health_score": health_score,
             "warnings": warning_analysis["warnings"],
             "latest_measurement": {
                 "id": measurement.id,
