@@ -261,6 +261,33 @@ def get_measurements_stats(id: int) -> dict[str, object]:
         }
 
 
+@app.get("/devices/{id}/measurements/history")
+def get_measurements_history(id: int) -> list[dict[str, object]]:
+    with SessionLocal() as db:
+        device = db.query(Device).filter(Device.id == id).first()
+        if device is None:
+            raise HTTPException(status_code=404, detail="Device not found")
+
+        measurements = (
+            db.query(Measurement)
+            .filter(Measurement.device_id == id)
+            .order_by(Measurement.recorded_at.desc())
+            .limit(50)
+            .all()
+        )
+
+        return [
+            {
+                "id": measurement.id,
+                "cpu_usage": measurement.cpu_usage,
+                "ram_usage": measurement.ram_usage,
+                "disk_usage": measurement.disk_usage,
+                "recorded_at": measurement.recorded_at,
+            }
+            for measurement in measurements
+        ]
+
+
 @app.get("/devices/{id}/warnings")
 def get_device_warnings(id: int) -> dict[str, object]:
     with SessionLocal() as db:
