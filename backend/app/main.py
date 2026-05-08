@@ -6,6 +6,7 @@ from sqlalchemy import text
 from app.core.database import Base, SessionLocal, engine
 from app.core.config import settings
 from app.models.device import Device
+from app.models.measurement import Measurement
 
 app = FastAPI(title=settings.APP_NAME)
 
@@ -80,6 +81,64 @@ def get_device(id: int) -> dict[str, object]:
             "gpu": device.gpu,
             "created_at": device.created_at,
         }
+
+
+@app.post("/devices/{id}/measurements")
+def create_measurement(
+    id: int,
+    cpu_usage: float = Body(...),
+    ram_usage: float = Body(...),
+    disk_usage: float = Body(...),
+) -> dict[str, object]:
+    with SessionLocal() as db:
+        device = db.query(Device).filter(Device.id == id).first()
+        if device is None:
+            raise HTTPException(status_code=404, detail="Device not found")
+
+        measurement = Measurement(
+            device_id=id,
+            cpu_usage=cpu_usage,
+            ram_usage=ram_usage,
+            disk_usage=disk_usage,
+            recorded_at=datetime.utcnow(),
+        )
+        db.add(measurement)
+        db.commit()
+        db.refresh(measurement)
+        return {
+            "id": measurement.id,
+            "device_id": measurement.device_id,
+            "cpu_usage": measurement.cpu_usage,
+            "ram_usage": measurement.ram_usage,
+            "disk_usage": measurement.disk_usage,
+            "recorded_at": measurement.recorded_at,
+        }
+
+
+@app.get("/devices/{id}/measurements")
+def get_measurements(id: int) -> list[dict[str, object]]:
+    with SessionLocal() as db:
+        device = db.query(Device).filter(Device.id == id).first()
+        if device is None:
+            raise HTTPException(status_code=404, detail="Device not found")
+
+        measurements = (
+            db.query(Measurement)
+            .filter(Measurement.device_id == id)
+            .order_by(Measurement.recorded_at.asc())
+            .all()
+        )
+        return [
+            {
+                "id": measurement.id,
+                "device_id": measurement.device_id,
+                "cpu_usage": measurement.cpu_usage,
+                "ram_usage": measurement.ram_usage,
+                "disk_usage": measurement.disk_usage,
+                "recorded_at": measurement.recorded_at,
+            }
+            for measurement in measurements
+        ]
 
 
 @app.put("/devices/{id}")
