@@ -7,6 +7,10 @@ def analyze_measurement(measurement: Measurement) -> dict[str, object]:
         warnings.append("Critical CPU usage")
     elif measurement.cpu_usage >= 85:
         warnings.append("High CPU usage")
+    if measurement.gpu_usage is not None and measurement.gpu_usage >= 95:
+        warnings.append("Critical GPU usage")
+    elif measurement.gpu_usage is not None and measurement.gpu_usage >= 85:
+        warnings.append("High GPU usage")
     if measurement.ram_usage >= 95:
         warnings.append("Critical RAM usage")
     elif measurement.ram_usage >= 85:
