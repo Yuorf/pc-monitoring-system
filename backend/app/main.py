@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime
 
 from fastapi import Body, FastAPI, HTTPException
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 from app.core.database import Base, SessionLocal, engine
 from app.core.config import settings
@@ -25,6 +25,7 @@ async def background_metrics_collector() -> None:
                 measurement = Measurement(
                     device_id=device.id,
                     cpu_usage=metrics["cpu_usage"],
+                    gpu_usage=metrics["gpu_usage"],
                     ram_usage=metrics["ram_usage"],
                     disk_usage=metrics["disk_usage"],
                     recorded_at=datetime.utcnow(),
@@ -39,6 +40,15 @@ async def background_metrics_collector() -> None:
 async def startup() -> None:
     try:
         Base.metadata.create_all(bind=engine)
+        with engine.begin() as connection:
+            inspector = inspect(connection)
+            measurement_columns = {
+                column["name"] for column in inspector.get_columns("measurements")
+            }
+            if "gpu_usage" not in measurement_columns:
+                connection.execute(
+                    text("ALTER TABLE measurements ADD COLUMN gpu_usage FLOAT")
+                )
         with SessionLocal() as db:
             db.execute(text("SELECT 1"))
             db.query(Device).filter(Device.id == 1).first()
@@ -54,7 +64,7 @@ def health() -> dict[str, str]:
 
 
 @app.get("/metrics/current")
-def get_current_metrics() -> dict[str, float]:
+def get_current_metrics() -> dict[str, float | None]:
     return collect_current_metrics()
 
 
@@ -118,6 +128,7 @@ def get_device(id: int) -> dict[str, object]:
 def create_measurement(
     id: int,
     cpu_usage: float = Body(...),
+    gpu_usage: float | None = Body(default=None),
     ram_usage: float = Body(...),
     disk_usage: float = Body(...),
 ) -> dict[str, object]:
@@ -129,6 +140,7 @@ def create_measurement(
         measurement = Measurement(
             device_id=id,
             cpu_usage=cpu_usage,
+            gpu_usage=gpu_usage,
             ram_usage=ram_usage,
             disk_usage=disk_usage,
             recorded_at=datetime.utcnow(),
@@ -140,6 +152,7 @@ def create_measurement(
             "id": measurement.id,
             "device_id": measurement.device_id,
             "cpu_usage": measurement.cpu_usage,
+            "gpu_usage": measurement.gpu_usage,
             "ram_usage": measurement.ram_usage,
             "disk_usage": measurement.disk_usage,
             "recorded_at": measurement.recorded_at,
@@ -157,6 +170,7 @@ def collect_measurement(id: int) -> dict[str, object]:
         measurement = Measurement(
             device_id=id,
             cpu_usage=metrics["cpu_usage"],
+            gpu_usage=metrics["gpu_usage"],
             ram_usage=metrics["ram_usage"],
             disk_usage=metrics["disk_usage"],
             recorded_at=datetime.utcnow(),
@@ -168,6 +182,7 @@ def collect_measurement(id: int) -> dict[str, object]:
             "id": measurement.id,
             "device_id": measurement.device_id,
             "cpu_usage": measurement.cpu_usage,
+            "gpu_usage": measurement.gpu_usage,
             "ram_usage": measurement.ram_usage,
             "disk_usage": measurement.disk_usage,
             "recorded_at": measurement.recorded_at,
@@ -192,6 +207,7 @@ def get_measurements(id: int) -> list[dict[str, object]]:
                 "id": measurement.id,
                 "device_id": measurement.device_id,
                 "cpu_usage": measurement.cpu_usage,
+                "gpu_usage": measurement.gpu_usage,
                 "ram_usage": measurement.ram_usage,
                 "disk_usage": measurement.disk_usage,
                 "recorded_at": measurement.recorded_at,
@@ -220,6 +236,7 @@ def get_latest_measurement(id: int) -> dict[str, object]:
             "id": measurement.id,
             "device_id": measurement.device_id,
             "cpu_usage": measurement.cpu_usage,
+            "gpu_usage": measurement.gpu_usage,
             "ram_usage": measurement.ram_usage,
             "disk_usage": measurement.disk_usage,
             "recorded_at": measurement.recorded_at,
@@ -238,6 +255,11 @@ def get_measurements_stats(id: int) -> dict[str, object]:
             raise HTTPException(status_code=404, detail="Measurements not found")
 
         cpu_values = [measurement.cpu_usage for measurement in measurements]
+        gpu_values = [
+            measurement.gpu_usage
+            for measurement in measurements
+            if measurement.gpu_usage is not None
+        ]
         ram_values = [measurement.ram_usage for measurement in measurements]
         disk_values = [measurement.disk_usage for measurement in measurements]
 
@@ -247,6 +269,11 @@ def get_measurements_stats(id: int) -> dict[str, object]:
                 "avg": sum(cpu_values) / len(cpu_values),
                 "max": max(cpu_values),
                 "min": min(cpu_values),
+            },
+            "gpu": {
+                "avg": sum(gpu_values) / len(gpu_values) if gpu_values else None,
+                "max": max(gpu_values) if gpu_values else None,
+                "min": min(gpu_values) if gpu_values else None,
             },
             "ram": {
                 "avg": sum(ram_values) / len(ram_values),
@@ -280,6 +307,7 @@ def get_measurements_history(id: int) -> list[dict[str, object]]:
             {
                 "id": measurement.id,
                 "cpu_usage": measurement.cpu_usage,
+                "gpu_usage": measurement.gpu_usage,
                 "ram_usage": measurement.ram_usage,
                 "disk_usage": measurement.disk_usage,
                 "recorded_at": measurement.recorded_at,
@@ -313,6 +341,7 @@ def get_device_warnings(id: int) -> dict[str, object]:
             "latest_measurement": {
                 "id": measurement.id,
                 "cpu_usage": measurement.cpu_usage,
+                "gpu_usage": measurement.gpu_usage,
                 "ram_usage": measurement.ram_usage,
                 "disk_usage": measurement.disk_usage,
                 "recorded_at": measurement.recorded_at,
