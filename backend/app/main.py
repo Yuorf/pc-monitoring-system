@@ -199,6 +199,32 @@ def get_measurements(id: int) -> list[dict[str, object]]:
         ]
 
 
+@app.get("/devices/{id}/measurements/latest")
+def get_latest_measurement(id: int) -> dict[str, object]:
+    with SessionLocal() as db:
+        device = db.query(Device).filter(Device.id == id).first()
+        if device is None:
+            raise HTTPException(status_code=404, detail="Device not found")
+
+        measurement = (
+            db.query(Measurement)
+            .filter(Measurement.device_id == id)
+            .order_by(Measurement.recorded_at.desc())
+            .first()
+        )
+        if measurement is None:
+            raise HTTPException(status_code=404, detail="Measurements not found")
+
+        return {
+            "id": measurement.id,
+            "device_id": measurement.device_id,
+            "cpu_usage": measurement.cpu_usage,
+            "ram_usage": measurement.ram_usage,
+            "disk_usage": measurement.disk_usage,
+            "recorded_at": measurement.recorded_at,
+        }
+
+
 @app.put("/devices/{id}")
 def update_device(
     id: int,
