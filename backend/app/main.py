@@ -8,6 +8,7 @@ from app.core.database import Base, SessionLocal, engine
 from app.core.config import settings
 from app.models.device import Device
 from app.models.measurement import Measurement
+from app.services.system_info import collect_system_info
 from app.services.system_metrics import collect_current_metrics
 from app.services.warning_service import analyze_measurement
 
@@ -66,6 +67,11 @@ def health() -> dict[str, str]:
 @app.get("/metrics/current")
 def get_current_metrics() -> dict[str, float | None]:
     return collect_current_metrics()
+
+
+@app.get("/system/info")
+def get_system_info() -> dict[str, object]:
+    return collect_system_info()
 
 
 @app.post("/devices")
