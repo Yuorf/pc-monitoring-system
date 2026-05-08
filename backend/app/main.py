@@ -226,6 +226,41 @@ def get_latest_measurement(id: int) -> dict[str, object]:
         }
 
 
+@app.get("/devices/{id}/measurements/stats")
+def get_measurements_stats(id: int) -> dict[str, object]:
+    with SessionLocal() as db:
+        device = db.query(Device).filter(Device.id == id).first()
+        if device is None:
+            raise HTTPException(status_code=404, detail="Device not found")
+
+        measurements = db.query(Measurement).filter(Measurement.device_id == id).all()
+        if not measurements:
+            raise HTTPException(status_code=404, detail="Measurements not found")
+
+        cpu_values = [measurement.cpu_usage for measurement in measurements]
+        ram_values = [measurement.ram_usage for measurement in measurements]
+        disk_values = [measurement.disk_usage for measurement in measurements]
+
+        return {
+            "device_id": id,
+            "cpu": {
+                "avg": sum(cpu_values) / len(cpu_values),
+                "max": max(cpu_values),
+                "min": min(cpu_values),
+            },
+            "ram": {
+                "avg": sum(ram_values) / len(ram_values),
+                "max": max(ram_values),
+                "min": min(ram_values),
+            },
+            "disk": {
+                "avg": sum(disk_values) / len(disk_values),
+                "max": max(disk_values),
+                "min": min(disk_values),
+            },
+        }
+
+
 @app.get("/devices/{id}/warnings")
 def get_device_warnings(id: int) -> dict[str, object]:
     with SessionLocal() as db:
