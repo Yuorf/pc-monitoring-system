@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.models.device import Device
 from app.models.measurement import Measurement
 from app.services.system_metrics import collect_current_metrics
+from app.services.warning_service import analyze_measurement
 
 app = FastAPI(title=settings.APP_NAME)
 
@@ -241,18 +242,12 @@ def get_device_warnings(id: int) -> dict[str, object]:
         if measurement is None:
             raise HTTPException(status_code=404, detail="Measurements not found")
 
-        warnings = []
-        if measurement.cpu_usage >= 85:
-            warnings.append("High CPU usage")
-        if measurement.ram_usage >= 85:
-            warnings.append("High RAM usage")
-        if measurement.disk_usage >= 90:
-            warnings.append("High disk usage")
+        warning_analysis = analyze_measurement(measurement)
 
         return {
             "device_id": id,
-            "status": "warning" if warnings else "ok",
-            "warnings": warnings,
+            "status": warning_analysis["status"],
+            "warnings": warning_analysis["warnings"],
             "latest_measurement": {
                 "id": measurement.id,
                 "cpu_usage": measurement.cpu_usage,
