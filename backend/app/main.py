@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 
 from fastapi import Body, FastAPI, HTTPException
@@ -12,12 +13,35 @@ from app.services.system_metrics import collect_current_metrics
 app = FastAPI(title=settings.APP_NAME)
 
 
+async def background_metrics_collector() -> None:
+    while True:
+        with SessionLocal() as db:
+            device = db.query(Device).filter(Device.id == 1).first()
+            if device is None:
+                print("Device for metrics collection not found")
+            else:
+                metrics = await asyncio.to_thread(collect_current_metrics)
+                measurement = Measurement(
+                    device_id=device.id,
+                    cpu_usage=metrics["cpu_usage"],
+                    ram_usage=metrics["ram_usage"],
+                    disk_usage=metrics["disk_usage"],
+                    recorded_at=datetime.utcnow(),
+                )
+                db.add(measurement)
+                db.commit()
+
+        await asyncio.sleep(10)
+
+
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
     try:
         Base.metadata.create_all(bind=engine)
         with SessionLocal() as db:
             db.execute(text("SELECT 1"))
+            db.query(Device).filter(Device.id == 1).first()
+        asyncio.create_task(background_metrics_collector())
         print("Database connected")
     except Exception as error:
         print(error)
