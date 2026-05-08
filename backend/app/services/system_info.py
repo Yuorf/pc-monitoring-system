@@ -1,3 +1,4 @@
+import json
 import platform
 import subprocess
 import sys
@@ -29,95 +30,165 @@ def _to_int(value: object) -> int | None:
         return None
 
 
+def _to_string(value: object) -> str | None:
+    if value is None:
+        return None
+    value_str = str(value).strip()
+    return value_str or None
+
+
+def _normalize_records(data: object) -> list[dict[str, object]]:
+    if isinstance(data, dict):
+        return [data]
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    return []
+
+
+def _run_command(command: list[str], timeout: int = 5) -> str | None:
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=True,
+        )
+    except Exception:
+        return None
+
+    output = result.stdout.strip()
+    return output or None
+
+
+def _run_powershell(command: str, timeout: int = 5) -> str | None:
+    return _run_command(
+        ["powershell", "-NoProfile", "-Command", command],
+        timeout=timeout,
+    )
+
+
+def _run_powershell_json(command: str, timeout: int = 5) -> object | None:
+    output = _run_powershell(command, timeout=timeout)
+    if not output:
+        return None
+
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError:
+        return None
+
+
 def _collect_cpu_info() -> dict[str, object]:
-    physical_cores = None
-    logical_cores = None
-    current_frequency_mhz = None
-    min_frequency_mhz = None
-    max_frequency_mhz = None
-    cpu_usage = None
-    per_core_usage = None
+    cpu_info = {
+        "name": None,
+        "manufacturer": None,
+        "physical_cores": None,
+        "logical_cores": None,
+        "current_frequency_mhz": None,
+        "min_frequency_mhz": None,
+        "max_frequency_mhz": None,
+        "cpu_usage": None,
+        "per_core_usage": None,
+    }
 
     try:
-        physical_cores = psutil.cpu_count(logical=False)
+        cpu_info["physical_cores"] = psutil.cpu_count(logical=False)
     except Exception:
-        physical_cores = None
+        pass
 
     try:
-        logical_cores = psutil.cpu_count(logical=True)
+        cpu_info["logical_cores"] = psutil.cpu_count(logical=True)
     except Exception:
-        logical_cores = None
+        pass
 
     try:
         cpu_freq = psutil.cpu_freq()
         if cpu_freq is not None:
-            current_frequency_mhz = _to_float(round(cpu_freq.current, 2))
-            min_frequency_mhz = _to_float(round(cpu_freq.min, 2))
-            max_frequency_mhz = _to_float(round(cpu_freq.max, 2))
+            cpu_info["current_frequency_mhz"] = _to_float(round(cpu_freq.current, 2))
+            cpu_info["min_frequency_mhz"] = _to_float(round(cpu_freq.min, 2))
+            cpu_info["max_frequency_mhz"] = _to_float(round(cpu_freq.max, 2))
     except Exception:
-        current_frequency_mhz = None
-        min_frequency_mhz = None
-        max_frequency_mhz = None
+        pass
 
     try:
         per_core_usage = psutil.cpu_percent(interval=1, percpu=True)
+        cpu_info["per_core_usage"] = [round(value, 2) for value in per_core_usage]
         if per_core_usage:
-            cpu_usage = round(sum(per_core_usage) / len(per_core_usage), 2)
+            cpu_info["cpu_usage"] = round(sum(per_core_usage) / len(per_core_usage), 2)
         else:
-            cpu_usage = 0.0
+            cpu_info["cpu_usage"] = 0.0
     except Exception:
-        cpu_usage = None
-        per_core_usage = None
+        pass
 
-    return {
-        "physical_cores": physical_cores,
-        "logical_cores": logical_cores,
-        "current_frequency_mhz": current_frequency_mhz,
-        "min_frequency_mhz": min_frequency_mhz,
-        "max_frequency_mhz": max_frequency_mhz,
-        "cpu_usage": cpu_usage,
-        "per_core_usage": per_core_usage,
+    cpu_records = _normalize_records(
+        _run_powershell_json(
+            "Get-CimInstance Win32_Processor | "
+            "Select-Object -First 1 Name, Manufacturer | "
+            "ConvertTo-Json -Compress"
+        )
+    )
+    if cpu_records:
+        cpu_info["name"] = _to_string(cpu_records[0].get("Name"))
+        cpu_info["manufacturer"] = _to_string(cpu_records[0].get("Manufacturer"))
+
+    return cpu_info
+
+
+def _collect_ram_info() -> dict[str, object]:
+    ram_info = {
+        "total_gb": None,
+        "used_gb": None,
+        "available_gb": None,
+        "percent": None,
+        "memory_modules": [],
     }
-
-
-def _collect_ram_info() -> dict[str, float | None]:
-    total_gb = None
-    used_gb = None
-    available_gb = None
-    percent = None
 
     try:
         memory = psutil.virtual_memory()
-        total_gb = _round_gb(memory.total)
-        used_gb = _round_gb(memory.used)
-        available_gb = _round_gb(memory.available)
-        percent = _to_float(memory.percent)
+        ram_info["total_gb"] = _round_gb(memory.total)
+        ram_info["used_gb"] = _round_gb(memory.used)
+        ram_info["available_gb"] = _round_gb(memory.available)
+        ram_info["percent"] = _to_float(memory.percent)
     except Exception:
-        total_gb = None
-        used_gb = None
-        available_gb = None
-        percent = None
+        pass
 
-    return {
-        "total_gb": total_gb,
-        "used_gb": used_gb,
-        "available_gb": available_gb,
-        "percent": percent,
-    }
+    module_records = _normalize_records(
+        _run_powershell_json(
+            "Get-CimInstance Win32_PhysicalMemory | "
+            "Select-Object Capacity, Manufacturer, Speed, ConfiguredClockSpeed, PartNumber, BankLabel | "
+            "ConvertTo-Json -Compress"
+        )
+    )
+    ram_info["memory_modules"] = [
+        {
+            "capacity_gb": _round_gb(_to_int(module.get("Capacity"))),
+            "manufacturer": _to_string(module.get("Manufacturer")),
+            "speed_mhz": _to_int(module.get("Speed")),
+            "configured_clock_speed_mhz": _to_int(
+                module.get("ConfiguredClockSpeed")
+            ),
+            "part_number": _to_string(module.get("PartNumber")),
+            "bank_label": _to_string(module.get("BankLabel")),
+        }
+        for module in module_records
+    ]
+
+    return ram_info
 
 
-def _collect_disks_info() -> list[dict[str, object]]:
-    disks = []
+def _collect_disk_partitions() -> list[dict[str, object]]:
+    partitions_info = []
 
     try:
         partitions = psutil.disk_partitions()
     except Exception:
-        return disks
+        return partitions_info
 
     for partition in partitions:
         try:
             usage = psutil.disk_usage(partition.mountpoint)
-            disks.append(
+            partitions_info.append(
                 {
                     "device": partition.device,
                     "mountpoint": partition.mountpoint,
@@ -131,98 +202,253 @@ def _collect_disks_info() -> list[dict[str, object]]:
         except Exception:
             continue
 
-    return disks
+    return partitions_info
 
 
-def _collect_gpu_info() -> dict[str, object]:
-    gpu_info = {
-        "name": None,
-        "usage_percent": None,
-        "memory_used_mb": None,
-        "memory_total_mb": None,
-        "temperature_celsius": None,
+def _collect_physical_drives() -> list[dict[str, object]]:
+    drive_records = _normalize_records(
+        _run_powershell_json(
+            "Get-CimInstance Win32_DiskDrive | "
+            "Select-Object Model, InterfaceType, MediaType, Size, Partitions, Status | "
+            "ConvertTo-Json -Compress"
+        )
+    )
+
+    return [
+        {
+            "model": _to_string(drive.get("Model")),
+            "interface_type": _to_string(drive.get("InterfaceType")),
+            "media_type": _to_string(drive.get("MediaType")),
+            "size_gb": _round_gb(_to_int(drive.get("Size"))),
+            "partitions": _to_int(drive.get("Partitions")),
+            "status": _to_string(drive.get("Status")),
+        }
+        for drive in drive_records
+    ]
+
+
+def _collect_disk_health() -> list[dict[str, object]]:
+    health_records = _normalize_records(
+        _run_powershell_json(
+            "Get-PhysicalDisk | "
+            "Select-Object FriendlyName, MediaType, HealthStatus, OperationalStatus, Size | "
+            "ConvertTo-Json -Compress -Depth 3"
+        )
+    )
+
+    health_info = []
+    for disk in health_records:
+        operational_status = disk.get("OperationalStatus")
+        if isinstance(operational_status, list):
+            operational_status = ", ".join(
+                str(value) for value in operational_status if value is not None
+            )
+
+        health_info.append(
+            {
+                "friendly_name": _to_string(disk.get("FriendlyName")),
+                "media_type": _to_string(disk.get("MediaType")),
+                "health_status": _to_string(disk.get("HealthStatus")),
+                "operational_status": _to_string(operational_status),
+                "size_gb": _round_gb(_to_int(disk.get("Size"))),
+            }
+        )
+
+    return health_info
+
+
+def _collect_disks_info() -> dict[str, object]:
+    return {
+        "partitions": _collect_disk_partitions(),
+        "physical_drives": _collect_physical_drives(),
+        "health": _collect_disk_health(),
     }
 
-    try:
-        result = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=True,
+
+def _collect_gpu_counter_usage() -> float | None:
+    output = _run_powershell(
+        (
+            "$samples = (Get-Counter '\\GPU Engine(*)\\Utilization Percentage')."
+            "CounterSamples; "
+            "$sum = ($samples | Measure-Object -Property CookedValue -Sum).Sum; "
+            "if ($null -eq $sum) { '' } "
+            "else { [math]::Min(100, [math]::Round($sum, 2)) }"
         )
-        first_line = next(
-            (line.strip() for line in result.stdout.splitlines() if line.strip()),
-            "",
-        )
-        if first_line:
-            parts = [part.strip() for part in first_line.split(",")]
-            gpu_info["name"] = parts[0] if len(parts) > 0 and parts[0] else None
-            gpu_info["usage_percent"] = _to_float(parts[1] if len(parts) > 1 else None)
-            gpu_info["memory_used_mb"] = _to_int(parts[2] if len(parts) > 2 else None)
-            gpu_info["memory_total_mb"] = _to_int(parts[3] if len(parts) > 3 else None)
-            gpu_info["temperature_celsius"] = _to_float(
-                parts[4] if len(parts) > 4 else None
+    )
+    return _to_float(output)
+
+
+def _collect_gpu_info() -> tuple[dict[str, object] | None, list[dict[str, object]]]:
+    nvidia_output = _run_command(
+        [
+            "nvidia-smi",
+            "--query-gpu=name,driver_version,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit,fan.speed,clocks.gr,clocks.mem",
+            "--format=csv,noheader,nounits",
+        ]
+    )
+    if nvidia_output:
+        gpu_devices = []
+        for line in nvidia_output.splitlines():
+            if not line.strip():
+                continue
+            parts = [part.strip() for part in line.split(",")]
+            gpu_devices.append(
+                {
+                    "name": _to_string(parts[0] if len(parts) > 0 else None),
+                    "driver_version": _to_string(parts[1] if len(parts) > 1 else None),
+                    "usage_percent": _to_float(parts[2] if len(parts) > 2 else None),
+                    "memory_used_mb": _to_int(parts[3] if len(parts) > 3 else None),
+                    "memory_total_mb": _to_int(parts[4] if len(parts) > 4 else None),
+                    "temperature_celsius": _to_float(
+                        parts[5] if len(parts) > 5 else None
+                    ),
+                    "power_draw_watts": _to_float(parts[6] if len(parts) > 6 else None),
+                    "power_limit_watts": _to_float(
+                        parts[7] if len(parts) > 7 else None
+                    ),
+                    "fan_speed_percent": _to_float(parts[8] if len(parts) > 8 else None),
+                    "graphics_clock_mhz": _to_float(
+                        parts[9] if len(parts) > 9 else None
+                    ),
+                    "memory_clock_mhz": _to_float(
+                        parts[10] if len(parts) > 10 else None
+                    ),
+                    "video_processor": None,
+                }
             )
-            return gpu_info
-    except Exception:
-        pass
 
-    try:
-        result = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                "Get-CimInstance Win32_VideoController | Select-Object -First 1 Name,AdapterRAM | ConvertTo-Json -Compress",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=True,
+        if gpu_devices:
+            return gpu_devices[0], gpu_devices
+
+    gpu_records = _normalize_records(
+        _run_powershell_json(
+            "Get-CimInstance Win32_VideoController | "
+            "Select-Object Name, AdapterRAM, DriverVersion, VideoProcessor | "
+            "ConvertTo-Json -Compress"
         )
-        output = result.stdout.strip()
-        if output:
-            import json
+    )
+    if not gpu_records:
+        return None, []
 
-            gpu_data = json.loads(output)
-            gpu_info["name"] = gpu_data.get("Name")
-            gpu_info["memory_total_mb"] = _to_int(
-                round(gpu_data.get("AdapterRAM", 0) / (1024**2), 2)
-                if gpu_data.get("AdapterRAM") is not None
-                else None
-            )
-    except Exception:
-        pass
-
-    try:
-        result = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                (
-                    "$samples = (Get-Counter '\\GPU Engine(*)\\Utilization Percentage')."
-                    "CounterSamples; "
-                    "$sum = ($samples | Measure-Object -Property CookedValue -Sum).Sum; "
-                    "if ($null -eq $sum) { '' } "
-                    "else { [math]::Min(100, [math]::Round($sum, 2)) }"
+    gpu_counter_usage = _collect_gpu_counter_usage()
+    gpu_devices = []
+    for index, gpu in enumerate(gpu_records):
+        gpu_devices.append(
+            {
+                "name": _to_string(gpu.get("Name")),
+                "driver_version": _to_string(gpu.get("DriverVersion")),
+                "usage_percent": gpu_counter_usage if index == 0 else None,
+                "memory_used_mb": None,
+                "memory_total_mb": _to_int(
+                    round(_to_int(gpu.get("AdapterRAM")) / (1024**2), 2)
+                    if _to_int(gpu.get("AdapterRAM")) is not None
+                    else None
                 ),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=True,
+                "temperature_celsius": None,
+                "power_draw_watts": None,
+                "power_limit_watts": None,
+                "fan_speed_percent": None,
+                "graphics_clock_mhz": None,
+                "memory_clock_mhz": None,
+                "video_processor": _to_string(gpu.get("VideoProcessor")),
+            }
         )
-        gpu_info["usage_percent"] = _to_float(result.stdout.strip())
-    except Exception:
-        pass
 
-    return gpu_info
+    return gpu_devices[0], gpu_devices
+
+
+def _collect_motherboard_info() -> dict[str, str | None]:
+    motherboard_info = {
+        "manufacturer": None,
+        "product": None,
+        "version": None,
+        "bios_manufacturer": None,
+        "bios_version": None,
+        "release_date": None,
+    }
+
+    board_records = _normalize_records(
+        _run_powershell_json(
+            "Get-CimInstance Win32_BaseBoard | "
+            "Select-Object -First 1 Manufacturer, Product, Version | "
+            "ConvertTo-Json -Compress"
+        )
+    )
+    if board_records:
+        motherboard_info["manufacturer"] = _to_string(
+            board_records[0].get("Manufacturer")
+        )
+        motherboard_info["product"] = _to_string(board_records[0].get("Product"))
+        motherboard_info["version"] = _to_string(board_records[0].get("Version"))
+
+    bios_records = _normalize_records(
+        _run_powershell_json(
+            "Get-CimInstance Win32_BIOS | "
+            "Select-Object -First 1 Manufacturer, SMBIOSBIOSVersion, ReleaseDate | "
+            "ConvertTo-Json -Compress"
+        )
+    )
+    if bios_records:
+        motherboard_info["bios_manufacturer"] = _to_string(
+            bios_records[0].get("Manufacturer")
+        )
+        motherboard_info["bios_version"] = _to_string(
+            bios_records[0].get("SMBIOSBIOSVersion")
+        )
+        motherboard_info["release_date"] = _to_string(bios_records[0].get("ReleaseDate"))
+
+    return motherboard_info
+
+
+def _collect_cooling_info() -> dict[str, list[dict[str, object]]]:
+    fan_records = _normalize_records(
+        _run_powershell_json(
+            "Get-CimInstance Win32_Fan | "
+            "Select-Object Name, Status, DesiredSpeed, VariableSpeed | "
+            "ConvertTo-Json -Compress"
+        )
+    )
+
+    return {
+        "fans": [
+            {
+                "name": _to_string(fan.get("Name")),
+                "status": _to_string(fan.get("Status")),
+                "desired_speed": _to_int(fan.get("DesiredSpeed")),
+                "variable_speed": fan.get("VariableSpeed"),
+            }
+            for fan in fan_records
+        ]
+    }
+
+
+def _collect_temperatures_info() -> dict[str, list[dict[str, object]]]:
+    sensor_records = _normalize_records(
+        _run_powershell_json(
+            "Get-WmiObject -Namespace root/wmi -Class MSAcpi_ThermalZoneTemperature | "
+            "Select-Object InstanceName, CurrentTemperature | "
+            "ConvertTo-Json -Compress"
+        )
+    )
+
+    sensors = []
+    for sensor in sensor_records:
+        current_temperature = _to_float(sensor.get("CurrentTemperature"))
+        if current_temperature is None:
+            continue
+
+        temperature_celsius = round((current_temperature / 10) - 273.15, 2)
+        if temperature_celsius < -50 or temperature_celsius > 200:
+            continue
+
+        sensors.append(
+            {
+                "name": _to_string(sensor.get("InstanceName")),
+                "temperature_celsius": temperature_celsius,
+            }
+        )
+
+    return {"sensors": sensors}
 
 
 def _collect_battery_info() -> dict[str, object] | None:
@@ -253,15 +479,22 @@ def _collect_platform_info() -> dict[str, str | None]:
         "machine": platform.machine(),
         "processor": platform.processor() or None,
         "python_version": platform.python_version() if sys.version_info else None,
+        "hostname": platform.node() or None,
     }
 
 
 def collect_system_info() -> dict[str, object]:
+    gpu, gpu_devices = _collect_gpu_info()
+
     return {
         "cpu": _collect_cpu_info(),
         "ram": _collect_ram_info(),
         "disks": _collect_disks_info(),
-        "gpu": _collect_gpu_info(),
+        "gpu": gpu,
+        "gpu_devices": gpu_devices,
+        "motherboard": _collect_motherboard_info(),
+        "cooling": _collect_cooling_info(),
+        "temperatures": _collect_temperatures_info(),
         "battery": _collect_battery_info(),
         "platform": _collect_platform_info(),
     }
