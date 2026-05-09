@@ -8,12 +8,52 @@ from app.core.database import Base, SessionLocal, engine
 from app.core.config import settings
 from app.models.device import Device
 from app.models.measurement import Measurement
-from app.services.hardware_sensors import collect_hardware_sensors
+from app.services.hardware_sensors import collect_hardware_sensors, extract_key_metrics
 from app.services.system_info import collect_system_info
 from app.services.system_metrics import collect_current_metrics
 from app.services.warning_service import analyze_measurement
 
 app = FastAPI(title=settings.APP_NAME)
+
+MEASUREMENT_COLUMN_TYPES = {
+    "gpu_usage": "FLOAT",
+    "cpu_temperature": "FLOAT",
+    "gpu_temperature": "FLOAT",
+    "ram_temperature": "FLOAT",
+    "disk_temperature": "FLOAT",
+    "cpu_power": "FLOAT",
+    "gpu_power": "FLOAT",
+    "system_fan_rpm": "FLOAT",
+    "disk_life": "FLOAT",
+    "disk_power_on_hours": "INTEGER",
+}
+
+
+def measurement_to_dict(
+    measurement: Measurement,
+    *,
+    include_device_id: bool = True,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "id": measurement.id,
+        "cpu_usage": measurement.cpu_usage,
+        "gpu_usage": measurement.gpu_usage,
+        "ram_usage": measurement.ram_usage,
+        "disk_usage": measurement.disk_usage,
+        "cpu_temperature": measurement.cpu_temperature,
+        "gpu_temperature": measurement.gpu_temperature,
+        "ram_temperature": measurement.ram_temperature,
+        "disk_temperature": measurement.disk_temperature,
+        "cpu_power": measurement.cpu_power,
+        "gpu_power": measurement.gpu_power,
+        "system_fan_rpm": measurement.system_fan_rpm,
+        "disk_life": measurement.disk_life,
+        "disk_power_on_hours": measurement.disk_power_on_hours,
+        "recorded_at": measurement.recorded_at,
+    }
+    if include_device_id:
+        payload["device_id"] = measurement.device_id
+    return payload
 
 
 async def background_metrics_collector() -> None:
@@ -24,12 +64,23 @@ async def background_metrics_collector() -> None:
                 print("Device for metrics collection not found")
             else:
                 metrics = await asyncio.to_thread(collect_current_metrics)
+                sensor_payload = await asyncio.to_thread(collect_hardware_sensors)
+                key_metrics = extract_key_metrics(sensor_payload)
                 measurement = Measurement(
                     device_id=device.id,
                     cpu_usage=metrics["cpu_usage"],
                     gpu_usage=metrics["gpu_usage"],
                     ram_usage=metrics["ram_usage"],
                     disk_usage=metrics["disk_usage"],
+                    cpu_temperature=key_metrics.get("cpu_temperature"),
+                    gpu_temperature=key_metrics.get("gpu_temperature"),
+                    ram_temperature=key_metrics.get("ram_temperature"),
+                    disk_temperature=key_metrics.get("disk_temperature"),
+                    cpu_power=key_metrics.get("cpu_power"),
+                    gpu_power=key_metrics.get("gpu_power"),
+                    system_fan_rpm=key_metrics.get("system_fan_rpm"),
+                    disk_life=key_metrics.get("disk_life"),
+                    disk_power_on_hours=key_metrics.get("disk_power_on_hours"),
                     recorded_at=datetime.utcnow(),
                 )
                 db.add(measurement)
@@ -47,9 +98,13 @@ async def startup() -> None:
             measurement_columns = {
                 column["name"] for column in inspector.get_columns("measurements")
             }
-            if "gpu_usage" not in measurement_columns:
+            for column_name, column_type in MEASUREMENT_COLUMN_TYPES.items():
+                if column_name in measurement_columns:
+                    continue
                 connection.execute(
-                    text("ALTER TABLE measurements ADD COLUMN gpu_usage FLOAT")
+                    text(
+                        f"ALTER TABLE measurements ADD COLUMN {column_name} {column_type}"
+                    )
                 )
         with SessionLocal() as db:
             db.execute(text("SELECT 1"))
@@ -160,15 +215,7 @@ def create_measurement(
         db.add(measurement)
         db.commit()
         db.refresh(measurement)
-        return {
-            "id": measurement.id,
-            "device_id": measurement.device_id,
-            "cpu_usage": measurement.cpu_usage,
-            "gpu_usage": measurement.gpu_usage,
-            "ram_usage": measurement.ram_usage,
-            "disk_usage": measurement.disk_usage,
-            "recorded_at": measurement.recorded_at,
-        }
+        return measurement_to_dict(measurement)
 
 
 @app.post("/devices/{id}/measurements/collect")
@@ -179,26 +226,29 @@ def collect_measurement(id: int) -> dict[str, object]:
             raise HTTPException(status_code=404, detail="Device not found")
 
         metrics = collect_current_metrics()
+        sensor_payload = collect_hardware_sensors()
+        key_metrics = extract_key_metrics(sensor_payload)
         measurement = Measurement(
             device_id=id,
             cpu_usage=metrics["cpu_usage"],
             gpu_usage=metrics["gpu_usage"],
             ram_usage=metrics["ram_usage"],
             disk_usage=metrics["disk_usage"],
+            cpu_temperature=key_metrics.get("cpu_temperature"),
+            gpu_temperature=key_metrics.get("gpu_temperature"),
+            ram_temperature=key_metrics.get("ram_temperature"),
+            disk_temperature=key_metrics.get("disk_temperature"),
+            cpu_power=key_metrics.get("cpu_power"),
+            gpu_power=key_metrics.get("gpu_power"),
+            system_fan_rpm=key_metrics.get("system_fan_rpm"),
+            disk_life=key_metrics.get("disk_life"),
+            disk_power_on_hours=key_metrics.get("disk_power_on_hours"),
             recorded_at=datetime.utcnow(),
         )
         db.add(measurement)
         db.commit()
         db.refresh(measurement)
-        return {
-            "id": measurement.id,
-            "device_id": measurement.device_id,
-            "cpu_usage": measurement.cpu_usage,
-            "gpu_usage": measurement.gpu_usage,
-            "ram_usage": measurement.ram_usage,
-            "disk_usage": measurement.disk_usage,
-            "recorded_at": measurement.recorded_at,
-        }
+        return measurement_to_dict(measurement)
 
 
 @app.get("/devices/{id}/measurements")
@@ -214,18 +264,7 @@ def get_measurements(id: int) -> list[dict[str, object]]:
             .order_by(Measurement.recorded_at.asc())
             .all()
         )
-        return [
-            {
-                "id": measurement.id,
-                "device_id": measurement.device_id,
-                "cpu_usage": measurement.cpu_usage,
-                "gpu_usage": measurement.gpu_usage,
-                "ram_usage": measurement.ram_usage,
-                "disk_usage": measurement.disk_usage,
-                "recorded_at": measurement.recorded_at,
-            }
-            for measurement in measurements
-        ]
+        return [measurement_to_dict(measurement) for measurement in measurements]
 
 
 @app.get("/devices/{id}/measurements/latest")
@@ -244,15 +283,7 @@ def get_latest_measurement(id: int) -> dict[str, object]:
         if measurement is None:
             raise HTTPException(status_code=404, detail="Measurements not found")
 
-        return {
-            "id": measurement.id,
-            "device_id": measurement.device_id,
-            "cpu_usage": measurement.cpu_usage,
-            "gpu_usage": measurement.gpu_usage,
-            "ram_usage": measurement.ram_usage,
-            "disk_usage": measurement.disk_usage,
-            "recorded_at": measurement.recorded_at,
-        }
+        return measurement_to_dict(measurement)
 
 
 @app.get("/devices/{id}/measurements/stats")
@@ -316,14 +347,7 @@ def get_measurements_history(id: int) -> list[dict[str, object]]:
         )
 
         return [
-            {
-                "id": measurement.id,
-                "cpu_usage": measurement.cpu_usage,
-                "gpu_usage": measurement.gpu_usage,
-                "ram_usage": measurement.ram_usage,
-                "disk_usage": measurement.disk_usage,
-                "recorded_at": measurement.recorded_at,
-            }
+            measurement_to_dict(measurement, include_device_id=False)
             for measurement in measurements
         ]
 
@@ -359,14 +383,10 @@ def get_device_warnings(id: int) -> dict[str, object]:
             "status": warning_analysis["status"],
             "health_score": health_score,
             "warnings": warning_analysis["warnings"],
-            "latest_measurement": {
-                "id": measurement.id,
-                "cpu_usage": measurement.cpu_usage,
-                "gpu_usage": measurement.gpu_usage,
-                "ram_usage": measurement.ram_usage,
-                "disk_usage": measurement.disk_usage,
-                "recorded_at": measurement.recorded_at,
-            },
+            "latest_measurement": measurement_to_dict(
+                measurement,
+                include_device_id=False,
+            ),
         }
 
 

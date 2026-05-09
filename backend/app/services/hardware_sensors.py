@@ -1,6 +1,7 @@
 import json
 import re
 import subprocess
+from datetime import datetime
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -246,6 +247,8 @@ def _append_sensor(
     unit: str | None,
     sensor_type: str,
     raw_value: object | None = None,
+    sensor_id: str | None = None,
+    hardware_id: str | None = None,
 ) -> None:
     numeric_value = _extract_numeric_value(value)
     if numeric_value is None:
@@ -265,6 +268,10 @@ def _append_sensor(
         "unit": final_unit,
         "sensor_type": sensor_type,
     }
+    if sensor_id is not None:
+        sensor["sensor_id"] = sensor_id
+    if hardware_id is not None:
+        sensor["hardware_id"] = hardware_id
     container[bucket].append(sensor)
 
 
@@ -374,6 +381,8 @@ def _collect_libre_hardware_monitor_web() -> tuple[dict[str, list[dict[str, obje
                     unit,
                     sensor_type,
                     raw_value=node.get("RawValue"),
+                    sensor_id=_to_string(node.get("SensorId")),
+                    hardware_id=current_hardware_id,
                 )
                 if len(result[bucket]) > before_count:
                     has_data = True
@@ -576,13 +585,22 @@ def _deduplicate_sensors(container: dict[str, object]) -> dict[str, object]:
         seen = set()
         unique_sensors = []
         for sensor in container.get(bucket, []):
-            key = (
-                sensor.get("source"),
-                sensor.get("component"),
-                sensor.get("name"),
-                sensor.get("sensor_type"),
-                sensor.get("unit", ""),
-            )
+            sensor_id = _to_string(sensor.get("sensor_id"))
+            hardware_id = _to_string(sensor.get("hardware_id"))
+            if sensor_id is not None:
+                key = (
+                    sensor.get("source"),
+                    sensor_id,
+                )
+            else:
+                key = (
+                    sensor.get("source"),
+                    sensor.get("component"),
+                    hardware_id,
+                    sensor.get("name"),
+                    sensor.get("sensor_type"),
+                    sensor.get("unit", ""),
+                )
             if key in seen:
                 continue
             seen.add(key)
@@ -590,6 +608,267 @@ def _deduplicate_sensors(container: dict[str, object]) -> dict[str, object]:
         container[bucket] = unique_sensors
 
     return container
+
+
+def _sensor_text(sensor: dict[str, object]) -> str:
+    return " ".join(
+        str(value).lower()
+        for value in (sensor.get("component"), sensor.get("name"), sensor.get("source"))
+        if value is not None
+    )
+
+
+def _sensor_name(sensor: dict[str, object]) -> str:
+    return str(sensor.get("name", "")).lower()
+
+
+def _match_keywords(text: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in text for keyword in keywords)
+
+
+def _collect_metric_sensors(
+    sensor_payload: dict[str, object],
+    bucket: str,
+    *,
+    component: str | None = None,
+    include_keywords: tuple[str, ...] = (),
+    exclude_keywords: tuple[str, ...] = (),
+) -> list[dict[str, object]]:
+    sensors = sensor_payload.get(bucket, [])
+    if not isinstance(sensors, list):
+        return []
+
+    matched = []
+    for sensor in sensors:
+        if not isinstance(sensor, dict):
+            continue
+
+        text = _sensor_text(sensor)
+        if component and str(sensor.get("component")).lower() != component.lower():
+            continue
+        if include_keywords and not _match_keywords(text, include_keywords):
+            continue
+        if exclude_keywords and _match_keywords(text, exclude_keywords):
+            continue
+        if _to_float(sensor.get("value")) is None:
+            continue
+        matched.append(sensor)
+
+    return matched
+
+
+def _metric_values(sensors: list[dict[str, object]]) -> list[float]:
+    values = []
+    for sensor in sensors:
+        value = _to_float(sensor.get("value"))
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def _round_metric(value: float | None, digits: int = 2) -> float | None:
+    if value is None:
+        return None
+    return round(value, digits)
+
+
+def _average_value(sensors: list[dict[str, object]]) -> float | None:
+    values = _metric_values(sensors)
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _max_value(sensors: list[dict[str, object]]) -> float | None:
+    values = _metric_values(sensors)
+    if not values:
+        return None
+    return max(values)
+
+
+def _min_value(sensors: list[dict[str, object]]) -> float | None:
+    values = _metric_values(sensors)
+    if not values:
+        return None
+    return min(values)
+
+
+def _filter_sensors_by_name(
+    sensors: list[dict[str, object]],
+    *,
+    include_keywords: tuple[str, ...] = (),
+    exclude_keywords: tuple[str, ...] = (),
+) -> list[dict[str, object]]:
+    matched = []
+    for sensor in sensors:
+        name = _sensor_name(sensor)
+        if include_keywords and not _match_keywords(name, include_keywords):
+            continue
+        if exclude_keywords and _match_keywords(name, exclude_keywords):
+            continue
+        matched.append(sensor)
+    return matched
+
+
+def _pick_preferred_value_by_name(
+    sensors: list[dict[str, object]],
+    *,
+    exact_names: tuple[str, ...] = (),
+    contains_names: tuple[str, ...] = (),
+    all_keyword_groups: tuple[tuple[str, ...], ...] = (),
+    fallback: str = "max",
+) -> float | None:
+    for exact_name in exact_names:
+        exact_matches = [
+            sensor for sensor in sensors if _sensor_name(sensor) == exact_name
+        ]
+        if exact_matches:
+            return _pick_preferred_value(exact_matches, fallback=fallback)
+
+    for contains_name in contains_names:
+        contains_matches = [
+            sensor for sensor in sensors if contains_name in _sensor_name(sensor)
+        ]
+        if contains_matches:
+            return _pick_preferred_value(contains_matches, fallback=fallback)
+
+    for keyword_group in all_keyword_groups:
+        grouped_matches = [
+            sensor
+            for sensor in sensors
+            if all(keyword in _sensor_name(sensor) for keyword in keyword_group)
+        ]
+        if grouped_matches:
+            return _pick_preferred_value(grouped_matches, fallback=fallback)
+
+    return _pick_preferred_value(sensors, fallback=fallback)
+
+
+def _pick_preferred_value(
+    sensors: list[dict[str, object]],
+    *,
+    preferred_keywords: tuple[str, ...] = (),
+    fallback: str = "max",
+) -> float | None:
+    candidates = sensors
+    if preferred_keywords:
+        preferred = [
+            sensor
+            for sensor in sensors
+            if _match_keywords(_sensor_text(sensor), preferred_keywords)
+        ]
+        if preferred:
+            candidates = preferred
+
+    if fallback == "avg":
+        return _average_value(candidates)
+    if fallback == "min":
+        return _min_value(candidates)
+    return _max_value(candidates)
+
+
+def _extract_disk_life(sensor_payload: dict[str, object]) -> float | None:
+    disk_data = _collect_metric_sensors(sensor_payload, "data", component="Disk")
+    life_values = []
+
+    for sensor in disk_data:
+        name = str(sensor.get("name", "")).lower()
+        value = _to_float(sensor.get("value"))
+        if value is None:
+            continue
+
+        if any(keyword in name for keyword in ("remaining life", "life left", "wear level", "health")):
+            life_values.append(value)
+            continue
+
+        if "percentage used" in name:
+            life_values.append(max(0.0, 100.0 - value))
+
+    if not life_values:
+        return None
+    return min(life_values)
+
+
+def _extract_disk_power_on_hours(sensor_payload: dict[str, object]) -> int | None:
+    disk_data = _collect_metric_sensors(sensor_payload, "data", component="Disk")
+    disk_data = _filter_sensors_by_name(
+        disk_data,
+        include_keywords=("power on hours", "power-on hours"),
+    )
+    values = _metric_values(disk_data)
+    if not values:
+        return None
+    return int(round(max(values)))
+
+
+def extract_key_metrics(sensor_payload: dict[str, object]) -> dict[str, object]:
+    cpu_temperatures = _collect_metric_sensors(sensor_payload, "temperatures", component="CPU")
+    gpu_temperatures = _collect_metric_sensors(sensor_payload, "temperatures", component="GPU")
+    ram_temperatures = _collect_metric_sensors(sensor_payload, "temperatures", component="RAM")
+    disk_temperatures = _collect_metric_sensors(sensor_payload, "temperatures", component="Disk")
+    cpu_powers = _collect_metric_sensors(sensor_payload, "powers", component="CPU")
+    gpu_powers = _collect_metric_sensors(sensor_payload, "powers", component="GPU")
+
+    system_fans = _collect_metric_sensors(
+        sensor_payload,
+        "fans",
+        include_keywords=("system", "sys", "chassis", "case"),
+        exclude_keywords=("cpu", "gpu", "pump"),
+    )
+    if not system_fans:
+        system_fans = _collect_metric_sensors(
+            sensor_payload,
+            "fans",
+            component="Motherboard",
+            exclude_keywords=("cpu", "gpu", "pump"),
+        )
+    disk_temperatures = _filter_sensors_by_name(
+        disk_temperatures,
+        exclude_keywords=("warning", "critical", "threshold", "limit"),
+    )
+    gpu_powers = _filter_sensors_by_name(
+        gpu_powers,
+        exclude_keywords=("power limit", "limit", "tdp"),
+    )
+
+    return {
+        "timestamp": datetime.utcnow(),
+        "cpu_temperature": _round_metric(
+            _pick_preferred_value_by_name(
+                cpu_temperatures,
+                contains_names=("core (tctl/tdie)", "cpu socket", "ccd1"),
+                exact_names=("cpu",),
+                fallback="max",
+            )
+        ),
+        "gpu_temperature": _round_metric(
+            _pick_preferred_value_by_name(
+                gpu_temperatures,
+                contains_names=("gpu core",),
+                all_keyword_groups=(("nvidia", "temperature"),),
+                fallback="max",
+            )
+        ),
+        "ram_temperature": _round_metric(_average_value(ram_temperatures)),
+        "disk_temperature": _round_metric(_max_value(disk_temperatures)),
+        "cpu_power": _round_metric(
+            _pick_preferred_value(
+                cpu_powers,
+                preferred_keywords=("package", "total", "ppt"),
+                fallback="max",
+            )
+        ),
+        "gpu_power": _round_metric(
+            _pick_preferred_value_by_name(
+                gpu_powers,
+                contains_names=("power draw", "gpu package", "gpu core"),
+                fallback="max",
+            )
+        ),
+        "system_fan_rpm": _round_metric(_average_value(system_fans)),
+        "disk_life": _round_metric(_extract_disk_life(sensor_payload)),
+        "disk_power_on_hours": _extract_disk_power_on_hours(sensor_payload),
+    }
 
 
 def collect_hardware_sensors() -> dict[str, object]:
