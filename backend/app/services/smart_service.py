@@ -60,6 +60,7 @@ DRIVE_FIELDS = (
     "critical_warning",
     "warning_temp_time",
     "critical_comp_time",
+    "smartctl_exit_status",
 )
 
 ATA_ATTRIBUTE_FIELD_MAP: dict[tuple[int, str], tuple[str, ...]] = {
@@ -1114,6 +1115,7 @@ def _collect_smartctl() -> tuple[list[dict[str, object]], bool]:
         drive = _empty_drive()
         device_info = payload.get("device") if isinstance(payload.get("device"), dict) else {}
         user_capacity = payload.get("user_capacity") if isinstance(payload.get("user_capacity"), dict) else {}
+        smartctl_info = payload.get("smartctl") if isinstance(payload.get("smartctl"), dict) else {}
         nvme_log = payload.get("nvme_smart_health_information_log")
         if not isinstance(nvme_log, dict):
             nvme_log = None
@@ -1188,6 +1190,11 @@ def _collect_smartctl() -> tuple[list[dict[str, object]], bool]:
             drive,
             "temperature_celsius",
             _extract_smartctl_temperature(payload, ata_table, nvme_log),
+        )
+        _set_if_present(
+            drive,
+            "smartctl_exit_status",
+            _to_int(smartctl_info.get("exit_status")),
         )
 
         drive["raw"]["smartctl"] = {
