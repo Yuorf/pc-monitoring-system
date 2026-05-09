@@ -92,6 +92,76 @@ def build_component_status(warnings: list[WarningDict]) -> dict[str, str]:
     return component_status
 
 
+def build_recommendations(warnings: list[WarningDict]) -> list[dict[str, object]]:
+    recommendation_map = {
+        "cpu_usage": {
+            "warning": "Close unnecessary applications and check background processes.",
+            "critical": "Reduce CPU load immediately and check for runaway processes.",
+        },
+        "gpu_usage": {
+            "warning": "Close GPU-intensive applications or reduce graphics workload.",
+            "critical": "Reduce GPU load immediately and check running GPU-intensive tasks.",
+        },
+        "ram_usage": {
+            "warning": "Close memory-intensive applications and check RAM usage.",
+            "critical": "Free up RAM immediately or increase available memory.",
+        },
+        "disk_usage": {
+            "warning": "Free up disk space and remove unnecessary files.",
+            "critical": "Free disk space urgently to avoid system instability.",
+        },
+        "cpu_temperature": {
+            "warning": "Check CPU cooling, airflow, and dust buildup.",
+            "critical": "Check CPU cooling immediately, including thermal paste and cooler mounting.",
+        },
+        "gpu_temperature": {
+            "warning": "Check GPU airflow and fan operation.",
+            "critical": "Reduce GPU load and check GPU cooling immediately.",
+        },
+        "ram_temperature": {
+            "warning": "Check case airflow near memory modules.",
+            "critical": "Improve RAM cooling and reduce system temperature.",
+        },
+        "disk_temperature": {
+            "warning": "Check airflow around storage devices.",
+            "critical": "Cool the storage device immediately and avoid heavy disk activity.",
+        },
+        "disk_life": {
+            "warning": "Back up important data and monitor disk health.",
+            "critical": "Back up data immediately and prepare to replace the storage device.",
+        },
+        "system_fan_rpm": {
+            "warning": "Check fan connection, fan curve settings, and physical fan operation.",
+            "critical": "Check fan connection, fan curve settings, and physical fan operation.",
+        },
+    }
+
+    recommendations = []
+    for warning in warnings:
+        level = warning.get("level")
+        metric = warning.get("metric")
+        component = warning.get("component")
+        if level not in ("warning", "critical"):
+            continue
+
+        metric_recommendations = recommendation_map.get(metric, {})
+        message = metric_recommendations.get(
+            level,
+            "Check the component state and monitor the metric dynamics.",
+        )
+        recommendations.append(
+            {
+                "priority": "high" if level == "critical" else "medium",
+                "component": component,
+                "metric": metric,
+                "message": message,
+                "reason": f"{warning.get('message')} crossed the {'critical' if level == 'critical' else 'warning'} threshold.",
+            }
+        )
+
+    return recommendations
+
+
 def analyze_measurement(measurement: Measurement) -> dict[str, object]:
     warnings: list[WarningDict] = []
 

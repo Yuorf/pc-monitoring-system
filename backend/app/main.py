@@ -11,7 +11,11 @@ from app.models.measurement import Measurement
 from app.services.hardware_sensors import collect_hardware_sensors, extract_key_metrics
 from app.services.system_info import collect_system_info
 from app.services.system_metrics import collect_current_metrics
-from app.services.warning_service import analyze_measurement, build_component_status
+from app.services.warning_service import (
+    analyze_measurement,
+    build_component_status,
+    build_recommendations,
+)
 
 app = FastAPI(title=settings.APP_NAME)
 
@@ -433,6 +437,36 @@ def get_device_health(id: int) -> dict[str, object]:
             "warnings_count": len(analysis["warnings"]),
             "critical_count": critical_count,
             "warning_count": warning_count,
+            "latest_measurement": measurement_to_dict(measurement),
+        }
+
+
+@app.get("/devices/{id}/recommendations")
+def get_device_recommendations(id: int) -> dict[str, object]:
+    with SessionLocal() as db:
+        device = db.query(Device).filter(Device.id == id).first()
+        if device is None:
+            raise HTTPException(status_code=404, detail="Device not found")
+
+        measurement = (
+            db.query(Measurement)
+            .filter(Measurement.device_id == id)
+            .order_by(Measurement.recorded_at.desc())
+            .first()
+        )
+        if measurement is None:
+            raise HTTPException(status_code=404, detail="Measurements not found")
+
+        analysis = analyze_measurement(measurement)
+        recommendations = build_recommendations(analysis["warnings"])
+
+        return {
+            "device_id": id,
+            "status": analysis["status"],
+            "health_score": analysis["health_score"],
+            "recommendations_count": len(recommendations),
+            "recommendations": recommendations,
+            "warnings": analysis["warnings"],
             "latest_measurement": measurement_to_dict(measurement),
         }
 
