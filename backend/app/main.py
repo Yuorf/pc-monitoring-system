@@ -471,6 +471,110 @@ def get_device_recommendations(id: int) -> dict[str, object]:
         }
 
 
+@app.get("/devices/{id}/components")
+def get_device_components(id: int) -> dict[str, object]:
+    with SessionLocal() as db:
+        device = db.query(Device).filter(Device.id == id).first()
+        if device is None:
+            raise HTTPException(status_code=404, detail="Device not found")
+
+        measurement = (
+            db.query(Measurement)
+            .filter(Measurement.device_id == id)
+            .order_by(Measurement.recorded_at.desc())
+            .first()
+        )
+        if measurement is None:
+            raise HTTPException(status_code=404, detail="Measurements not found")
+
+        analysis = analyze_measurement(measurement)
+        component_status = build_component_status(analysis["warnings"])
+        recommendations = build_recommendations(analysis["warnings"])
+
+        warnings_by_component = {
+            "CPU": [],
+            "GPU": [],
+            "RAM": [],
+            "Disk": [],
+            "Cooling": [],
+        }
+        for warning in analysis["warnings"]:
+            component = warning.get("component")
+            if component in warnings_by_component:
+                warnings_by_component[component].append(warning)
+
+        recommendations_by_component = {
+            "CPU": [],
+            "GPU": [],
+            "RAM": [],
+            "Disk": [],
+            "Cooling": [],
+        }
+        for recommendation in recommendations:
+            component = recommendation.get("component")
+            if component in recommendations_by_component:
+                recommendations_by_component[component].append(recommendation)
+
+        components = {
+            "CPU": {
+                "status": component_status["CPU"],
+                "metrics": {
+                    "usage": measurement.cpu_usage,
+                    "temperature": measurement.cpu_temperature,
+                    "power": measurement.cpu_power,
+                },
+                "warnings": warnings_by_component["CPU"],
+                "recommendations": recommendations_by_component["CPU"],
+            },
+            "GPU": {
+                "status": component_status["GPU"],
+                "metrics": {
+                    "usage": measurement.gpu_usage,
+                    "temperature": measurement.gpu_temperature,
+                    "power": measurement.gpu_power,
+                },
+                "warnings": warnings_by_component["GPU"],
+                "recommendations": recommendations_by_component["GPU"],
+            },
+            "RAM": {
+                "status": component_status["RAM"],
+                "metrics": {
+                    "usage": measurement.ram_usage,
+                    "temperature": measurement.ram_temperature,
+                },
+                "warnings": warnings_by_component["RAM"],
+                "recommendations": recommendations_by_component["RAM"],
+            },
+            "Disk": {
+                "status": component_status["Disk"],
+                "metrics": {
+                    "usage": measurement.disk_usage,
+                    "temperature": measurement.disk_temperature,
+                    "life": measurement.disk_life,
+                    "power_on_hours": measurement.disk_power_on_hours,
+                },
+                "warnings": warnings_by_component["Disk"],
+                "recommendations": recommendations_by_component["Disk"],
+            },
+            "Cooling": {
+                "status": component_status["Cooling"],
+                "metrics": {
+                    "system_fan_rpm": measurement.system_fan_rpm,
+                },
+                "warnings": warnings_by_component["Cooling"],
+                "recommendations": recommendations_by_component["Cooling"],
+            },
+        }
+
+        return {
+            "device_id": id,
+            "overall_status": analysis["status"],
+            "health_score": analysis["health_score"],
+            "components": components,
+            "latest_measurement": measurement_to_dict(measurement),
+        }
+
+
 @app.put("/devices/{id}")
 def update_device(
     id: int,
