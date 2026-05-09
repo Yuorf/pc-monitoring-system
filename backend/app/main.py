@@ -198,6 +198,15 @@ def create_measurement(
     gpu_usage: float | None = Body(default=None),
     ram_usage: float = Body(...),
     disk_usage: float = Body(...),
+    cpu_temperature: float | None = Body(default=None),
+    gpu_temperature: float | None = Body(default=None),
+    ram_temperature: float | None = Body(default=None),
+    disk_temperature: float | None = Body(default=None),
+    cpu_power: float | None = Body(default=None),
+    gpu_power: float | None = Body(default=None),
+    system_fan_rpm: float | None = Body(default=None),
+    disk_life: float | None = Body(default=None),
+    disk_power_on_hours: int | None = Body(default=None),
 ) -> dict[str, object]:
     with SessionLocal() as db:
         device = db.query(Device).filter(Device.id == id).first()
@@ -210,6 +219,15 @@ def create_measurement(
             gpu_usage=gpu_usage,
             ram_usage=ram_usage,
             disk_usage=disk_usage,
+            cpu_temperature=cpu_temperature,
+            gpu_temperature=gpu_temperature,
+            ram_temperature=ram_temperature,
+            disk_temperature=disk_temperature,
+            cpu_power=cpu_power,
+            gpu_power=gpu_power,
+            system_fan_rpm=system_fan_rpm,
+            disk_life=disk_life,
+            disk_power_on_hours=disk_power_on_hours,
             recorded_at=datetime.utcnow(),
         )
         db.add(measurement)
@@ -369,19 +387,11 @@ def get_device_warnings(id: int) -> dict[str, object]:
             raise HTTPException(status_code=404, detail="Measurements not found")
 
         warning_analysis = analyze_measurement(measurement)
-        load_values = [
-            measurement.cpu_usage,
-            measurement.ram_usage,
-            measurement.disk_usage,
-        ]
-        if measurement.gpu_usage is not None:
-            load_values.append(measurement.gpu_usage)
-        health_score = 100 - (sum(load_values) / len(load_values))
 
         return {
             "device_id": id,
             "status": warning_analysis["status"],
-            "health_score": health_score,
+            "health_score": warning_analysis["health_score"],
             "warnings": warning_analysis["warnings"],
             "latest_measurement": measurement_to_dict(
                 measurement,
