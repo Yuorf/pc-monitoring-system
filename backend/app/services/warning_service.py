@@ -71,6 +71,27 @@ def calculate_health_score(
     return max(0, min(100, score))
 
 
+def build_component_status(warnings: list[WarningDict]) -> dict[str, str]:
+    component_status = {
+        "CPU": "ok",
+        "GPU": "ok",
+        "RAM": "ok",
+        "Disk": "ok",
+        "Cooling": "ok",
+    }
+    for warning in warnings:
+        component = warning.get("component")
+        level = warning.get("level")
+        if component not in component_status or level not in ("warning", "critical"):
+            continue
+        if level == "critical":
+            component_status[component] = "critical"
+            continue
+        if component_status[component] != "critical":
+            component_status[component] = "warning"
+    return component_status
+
+
 def analyze_measurement(measurement: Measurement) -> dict[str, object]:
     warnings: list[WarningDict] = []
 

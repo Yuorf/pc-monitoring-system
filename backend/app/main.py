@@ -11,7 +11,7 @@ from app.models.measurement import Measurement
 from app.services.hardware_sensors import collect_hardware_sensors, extract_key_metrics
 from app.services.system_info import collect_system_info
 from app.services.system_metrics import collect_current_metrics
-from app.services.warning_service import analyze_measurement
+from app.services.warning_service import analyze_measurement, build_component_status
 
 app = FastAPI(title=settings.APP_NAME)
 
@@ -397,6 +397,43 @@ def get_device_warnings(id: int) -> dict[str, object]:
                 measurement,
                 include_device_id=False,
             ),
+        }
+
+
+@app.get("/devices/{id}/health")
+def get_device_health(id: int) -> dict[str, object]:
+    with SessionLocal() as db:
+        device = db.query(Device).filter(Device.id == id).first()
+        if device is None:
+            raise HTTPException(status_code=404, detail="Device not found")
+
+        measurement = (
+            db.query(Measurement)
+            .filter(Measurement.device_id == id)
+            .order_by(Measurement.recorded_at.desc())
+            .first()
+        )
+        if measurement is None:
+            raise HTTPException(status_code=404, detail="Measurements not found")
+
+        analysis = analyze_measurement(measurement)
+        component_status = build_component_status(analysis["warnings"])
+        critical_count = sum(
+            1 for warning in analysis["warnings"] if warning["level"] == "critical"
+        )
+        warning_count = sum(
+            1 for warning in analysis["warnings"] if warning["level"] == "warning"
+        )
+
+        return {
+            "device_id": id,
+            "overall_status": analysis["status"],
+            "health_score": analysis["health_score"],
+            "components": component_status,
+            "warnings_count": len(analysis["warnings"]),
+            "critical_count": critical_count,
+            "warning_count": warning_count,
+            "latest_measurement": measurement_to_dict(measurement),
         }
 
 
