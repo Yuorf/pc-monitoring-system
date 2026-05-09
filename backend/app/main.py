@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.models.device import Device
 from app.models.measurement import Measurement
 from app.services.hardware_sensors import collect_hardware_sensors, extract_key_metrics
+from app.services.smart_service import collect_smart_data
 from app.services.system_info import collect_system_info
 from app.services.system_metrics import collect_current_metrics
 from app.services.warning_service import (
@@ -137,6 +138,11 @@ def get_system_info() -> dict[str, object]:
 @app.get("/system/sensors")
 def get_system_sensors() -> dict[str, object]:
     return collect_hardware_sensors()
+
+
+@app.get("/system/smart")
+def get_system_smart() -> dict[str, object]:
+    return collect_smart_data()
 
 
 @app.post("/devices")
