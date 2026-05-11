@@ -2,3 +2,9 @@ backend/venv/
 **/__pycache__/
 *.pyc
 .env
+backend/ml/data/raw/
+backend/ml/data/processed/
+backend/ml/models/*.pkl
+backend/ml/models/*.joblib
+backend/ml/reports/*.csv
+backend/ml/reports/*.json
