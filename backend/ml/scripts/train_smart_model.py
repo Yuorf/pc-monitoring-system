@@ -48,14 +48,13 @@ FEATURE_COLUMNS = [
     "has_crc_errors",
 ]
 
-TARGET_COLUMN = "failure"
 CHUNK_SIZE = 100_000
 
 
 def parse_args() -> argparse.Namespace:
     script_dir = Path(__file__).resolve().parent
     ml_dir = script_dir.parent
-    default_input = ml_dir / "data" / "processed" / "backblaze_smart_dataset.csv"
+    default_input = ml_dir / "data" / "processed" / "backblaze_smart_predictive_30d.csv"
 
     parser = argparse.ArgumentParser(
         description="Train a SMART failure prediction model from the prepared Backblaze dataset."
@@ -67,10 +66,28 @@ def parse_args() -> argparse.Namespace:
         help="Path to the processed Backblaze CSV dataset.",
     )
     parser.add_argument(
+        "--target",
+        type=str,
+        default="failure_within_30_days",
+        help="Target column to train on, for example failure or failure_within_30_days.",
+    )
+    parser.add_argument(
+        "--split-mode",
+        choices=("stratified", "date"),
+        default="stratified",
+        help="How to split data into train and test sets.",
+    )
+    parser.add_argument(
+        "--test-start-date",
+        type=str,
+        default=None,
+        help="Test split start date for split-mode=date, for example 2024-12-01.",
+    )
+    parser.add_argument(
         "--max-normal-rows",
         type=int,
         default=1_000_000,
-        help="Maximum number of failure=0 rows to keep for training.",
+        help="Maximum number of target=0 rows to keep for training.",
     )
     parser.add_argument(
         "--random-state",
@@ -90,6 +107,8 @@ def parse_args() -> argparse.Namespace:
 def load_dataset(
     input_path: Path,
     feature_columns: list[str],
+    target_column: str,
+    split_mode: str,
     *,
     max_normal_rows: int,
     random_state: int,
@@ -97,24 +116,35 @@ def load_dataset(
     if not input_path.exists():
         raise FileNotFoundError(
             "Processed dataset not found. Run "
-            "'python ml/scripts/prepare_backblaze_dataset.py' from the backend directory first."
+            "'python ml/scripts/prepare_backblaze_dataset.py' or "
+            "'python ml/scripts/prepare_backblaze_predictive_dataset.py' "
+            "from the backend directory first."
         )
 
-    required_columns = feature_columns + [TARGET_COLUMN]
     header = pd.read_csv(input_path, nrows=0)
+    has_date_column = "date" in header.columns
+    if split_mode == "date" and not has_date_column:
+        raise ValueError(
+            "Dataset does not contain a 'date' column, but split-mode=date was requested."
+        )
+
+    required_columns = feature_columns + [target_column]
+    if has_date_column:
+        required_columns.append("date")
+
     missing_columns = [column for column in required_columns if column not in header.columns]
     if missing_columns:
         raise ValueError(
             f"Dataset is missing required columns: {missing_columns}. "
-            "Rebuild it with 'python ml/scripts/prepare_backblaze_dataset.py'."
+            "Rebuild the dataset with the matching prepare script for the selected target."
         )
 
     rng = np.random.default_rng(random_state)
-    failure_chunks: list[pd.DataFrame] = []
+    positive_chunks: list[pd.DataFrame] = []
     normal_sample = pd.DataFrame(columns=required_columns)
 
     total_rows_read = 0
-    failure_rows = 0
+    positive_rows = 0
     normal_rows_total = 0
 
     for chunk in pd.read_csv(
@@ -125,24 +155,29 @@ def load_dataset(
     ):
         total_rows_read += len(chunk)
 
+        if "date" in chunk.columns:
+            chunk["date"] = pd.to_datetime(chunk["date"], errors="coerce")
+
         for column in required_columns:
+            if column == "date":
+                continue
             chunk[column] = pd.to_numeric(chunk[column], errors="coerce")
 
-        chunk = chunk.dropna(subset=[TARGET_COLUMN]).copy()
+        chunk = chunk.dropna(subset=[target_column]).copy()
         if chunk.empty:
             continue
 
-        chunk[TARGET_COLUMN] = chunk[TARGET_COLUMN].astype(int)
-        chunk = chunk[chunk[TARGET_COLUMN].isin([0, 1])].copy()
+        chunk[target_column] = chunk[target_column].astype(int)
+        chunk = chunk[chunk[target_column].isin([0, 1])].copy()
         if chunk.empty:
             continue
 
-        failure_chunk = chunk[chunk[TARGET_COLUMN] == 1].copy()
-        normal_chunk = chunk[chunk[TARGET_COLUMN] == 0].copy()
+        positive_chunk = chunk[chunk[target_column] == 1].copy()
+        normal_chunk = chunk[chunk[target_column] == 0].copy()
 
-        if not failure_chunk.empty:
-            failure_rows += len(failure_chunk)
-            failure_chunks.append(failure_chunk)
+        if not positive_chunk.empty:
+            positive_rows += len(positive_chunk)
+            positive_chunks.append(positive_chunk)
 
         if normal_chunk.empty:
             continue
@@ -163,31 +198,34 @@ def load_dataset(
         )
         normal_sample = combined_normal.iloc[selected_indices].reset_index(drop=True)
 
-    failure_df = (
-        pd.concat(failure_chunks, ignore_index=True)
-        if failure_chunks
+    positive_df = (
+        pd.concat(positive_chunks, ignore_index=True)
+        if positive_chunks
         else pd.DataFrame(columns=required_columns)
     )
     normal_sample = normal_sample.reset_index(drop=True)
 
     stats = {
         "total_rows_read": int(total_rows_read),
-        "failure_rows": int(failure_rows),
+        "positive_rows": int(positive_rows),
         "normal_rows_total": int(normal_rows_total),
         "normal_rows_used": int(len(normal_sample)),
     }
-    return failure_df, normal_sample, stats
+    return positive_df, normal_sample, stats
 
 
 def balance_dataset(
-    failure_df: pd.DataFrame,
+    positive_df: pd.DataFrame,
     normal_df: pd.DataFrame,
+    target_column: str,
     *,
     random_state: int,
 ) -> pd.DataFrame:
-    combined = pd.concat([failure_df, normal_df], ignore_index=True)
+    combined = pd.concat([positive_df, normal_df], ignore_index=True)
     if combined.empty:
         return combined
+    if target_column not in combined.columns:
+        raise ValueError(f"Target column '{target_column}' is missing from the balanced dataset.")
     return combined.sample(frac=1.0, random_state=random_state).reset_index(drop=True)
 
 
@@ -320,30 +358,78 @@ def evaluate_model(
 def train_and_select_model(
     dataset: pd.DataFrame,
     feature_columns: list[str],
+    target_column: str,
     *,
     random_state: int,
     test_size: float,
+    split_mode: str,
+    test_start_date: str | None,
 ) -> tuple[Pipeline, str, dict[str, dict[str, Any]], dict[str, int], str, float]:
     if dataset.empty:
         raise ValueError("Training dataset is empty after balancing.")
 
-    y = dataset[TARGET_COLUMN].astype(int)
+    dataset = dataset.copy()
+    y = dataset[target_column].astype(int)
     class_counts = y.value_counts().to_dict()
     if len(class_counts) < 2 or min(class_counts.values()) < 2:
         raise ValueError(
             "Not enough rows in both classes for a stratified split. "
-            "Make sure the prepared dataset contains enough failure=1 examples."
+            f"Make sure the prepared dataset contains enough {target_column}=1 examples."
         )
 
-    x = dataset[feature_columns].copy()
+    if split_mode == "stratified":
+        x = dataset[feature_columns].copy()
+        x_train, x_test, y_train, y_test = train_test_split(
+            x,
+            y,
+            test_size=test_size,
+            random_state=random_state,
+            stratify=y,
+        )
+    elif split_mode == "date":
+        if "date" not in dataset.columns:
+            raise ValueError("Dataset does not contain 'date', but split-mode=date was requested.")
+        if not test_start_date:
+            raise ValueError("Argument --test-start-date is required when --split-mode date is used.")
 
-    x_train, x_test, y_train, y_test = train_test_split(
-        x,
-        y,
-        test_size=test_size,
-        random_state=random_state,
-        stratify=y,
-    )
+        split_timestamp = pd.to_datetime(test_start_date, errors="coerce")
+        if pd.isna(split_timestamp):
+            raise ValueError(
+                f"Could not parse test start date '{test_start_date}'. Expected format YYYY-MM-DD."
+            )
+
+        dataset["date"] = pd.to_datetime(dataset["date"], errors="coerce")
+        dataset = dataset.dropna(subset=["date"]).copy()
+        if dataset.empty:
+            raise ValueError("Dataset became empty after dropping invalid date values for split-mode=date.")
+
+        train_mask = dataset["date"] < split_timestamp
+        test_mask = dataset["date"] >= split_timestamp
+
+        train_df = dataset.loc[train_mask].copy()
+        test_df = dataset.loc[test_mask].copy()
+        if train_df.empty or test_df.empty:
+            raise ValueError(
+                "Date split produced an empty train or test set. Adjust --test-start-date."
+            )
+
+        y_train = train_df[target_column].astype(int)
+        y_test = test_df[target_column].astype(int)
+        train_class_counts = y_train.value_counts().to_dict()
+        test_class_counts = y_test.value_counts().to_dict()
+        if len(train_class_counts) < 2 or min(train_class_counts.values()) < 1:
+            raise ValueError(
+                "Train split for split-mode=date does not contain both classes 0 and 1."
+            )
+        if len(test_class_counts) < 2 or min(test_class_counts.values()) < 1:
+            raise ValueError(
+                "Test split for split-mode=date does not contain both classes 0 and 1."
+            )
+
+        x_train = train_df[feature_columns].copy()
+        x_test = test_df[feature_columns].copy()
+    else:
+        raise ValueError(f"Unsupported split mode: {split_mode}")
 
     metrics_by_model: dict[str, dict[str, Any]] = {}
     trained_models: dict[str, Pipeline] = {}
@@ -395,6 +481,10 @@ def train_and_select_model(
     split_stats = {
         "train_rows": int(len(x_train)),
         "test_rows": int(len(x_test)),
+        "train_positive_rows": int((y_train == 1).sum()),
+        "train_normal_rows": int((y_train == 0).sum()),
+        "test_positive_rows": int((y_test == 1).sum()),
+        "test_normal_rows": int((y_test == 0).sum()),
     }
     return (
         trained_models[best_model_name],
@@ -410,8 +500,11 @@ def save_artifacts(
     model: Pipeline,
     model_name: str,
     feature_columns: list[str],
+    target_column: str,
     best_threshold: float,
     selection_rule: str,
+    split_mode: str,
+    test_start_date: str | None,
     report: dict[str, Any],
     *,
     model_path: Path,
@@ -424,8 +517,11 @@ def save_artifacts(
         {
             "model_name": model_name,
             "feature_columns": feature_columns,
+            "target_column": target_column,
             "best_threshold": best_threshold,
             "selection_rule": selection_rule,
+            "split_mode": split_mode,
+            "test_start_date": test_start_date,
             "pipeline": model,
         },
         model_path,
@@ -438,11 +534,16 @@ def save_artifacts(
 def main() -> None:
     args = parse_args()
     input_path = args.input.resolve()
+    target_column = args.target
+    split_mode = args.split_mode
+    test_start_date = args.test_start_date
 
     try:
-        failure_df, normal_df, stats = load_dataset(
+        positive_df, normal_df, stats = load_dataset(
             input_path,
             FEATURE_COLUMNS,
+            target_column,
+            split_mode,
             max_normal_rows=args.max_normal_rows,
             random_state=args.random_state,
         )
@@ -454,8 +555,9 @@ def main() -> None:
         raise SystemExit(1) from error
 
     dataset = balance_dataset(
-        failure_df,
+        positive_df,
         normal_df,
+        target_column,
         random_state=args.random_state,
     )
 
@@ -473,20 +575,31 @@ def main() -> None:
         ) = train_and_select_model(
             dataset,
             FEATURE_COLUMNS,
+            target_column,
             random_state=args.random_state,
             test_size=args.test_size,
+            split_mode=split_mode,
+            test_start_date=test_start_date,
         )
     except ValueError as error:
         print(error)
         raise SystemExit(1) from error
 
     report = {
+        "split_mode": split_mode,
+        "test_start_date": test_start_date,
+        "target_column": target_column,
+        "input_path": str(input_path),
         "total_rows_read": stats["total_rows_read"],
-        "failure_rows": stats["failure_rows"],
+        "positive_rows": stats["positive_rows"],
         "normal_rows_total": stats["normal_rows_total"],
         "normal_rows_used": stats["normal_rows_used"],
         "train_rows": split_stats["train_rows"],
         "test_rows": split_stats["test_rows"],
+        "train_positive_rows": split_stats["train_positive_rows"],
+        "train_normal_rows": split_stats["train_normal_rows"],
+        "test_positive_rows": split_stats["test_positive_rows"],
+        "test_normal_rows": split_stats["test_normal_rows"],
         "feature_columns": FEATURE_COLUMNS,
         "metrics_by_model": metrics_by_model,
         "best_model_name": best_model_name,
@@ -499,17 +612,33 @@ def main() -> None:
         best_model,
         best_model_name,
         FEATURE_COLUMNS,
+        target_column,
         best_threshold,
         selection_rule,
+        split_mode,
+        test_start_date,
         report,
         model_path=model_path,
         report_path=report_path,
     )
 
+    print(f"Target column: {target_column}")
+    print(f"Split mode: {split_mode}")
+    print(f"Test start date: {test_start_date}")
     print(f"Total rows read: {stats['total_rows_read']}")
-    print(f"Failure rows (failure=1): {stats['failure_rows']}")
-    print(f"Normal rows total (failure=0): {stats['normal_rows_total']}")
+    print(f"Positive rows: {stats['positive_rows']}")
+    print(f"Normal rows total: {stats['normal_rows_total']}")
     print(f"Normal rows used: {stats['normal_rows_used']}")
+    print(f"Train rows: {split_stats['train_rows']}")
+    print(f"Test rows: {split_stats['test_rows']}")
+    print(
+        f"Train positive / normal: "
+        f"{split_stats['train_positive_rows']} / {split_stats['train_normal_rows']}"
+    )
+    print(
+        f"Test positive / normal: "
+        f"{split_stats['test_positive_rows']} / {split_stats['test_normal_rows']}"
+    )
     print(f"Feature columns: {FEATURE_COLUMNS}")
 
     for model_name, metrics in metrics_by_model.items():
