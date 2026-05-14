@@ -10,7 +10,11 @@ from app.core.config import settings
 from app.models.device import Device
 from app.models.measurement import Measurement
 from app.services.hardware_sensors import collect_hardware_sensors, extract_key_metrics
-from app.services.ml_prediction_service import predict_smart_failure
+from app.services.ml_prediction_service import (
+    get_smart_model_info,
+    predict_current_smart_failure,
+    predict_smart_failure,
+)
 from app.services.smart_service import collect_smart_data
 from app.services.system_info import collect_system_info
 from app.services.system_metrics import collect_current_metrics
@@ -166,6 +170,26 @@ def get_system_smart() -> dict[str, object]:
 @app.post("/ml/smart/predict")
 def predict_ml_smart(request: SmartPredictionRequest) -> dict[str, object]:
     return predict_smart_failure(request.model_dump())
+
+
+@app.get("/ml/smart/model/info")
+def get_ml_smart_model_info() -> dict[str, object]:
+    try:
+        return get_smart_model_info()
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@app.get("/ml/smart/predict/current")
+def predict_ml_smart_current() -> dict[str, object]:
+    try:
+        return predict_current_smart_failure()
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @app.post("/devices")

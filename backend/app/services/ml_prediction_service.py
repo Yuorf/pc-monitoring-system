@@ -7,6 +7,8 @@ from pathlib import Path
 import joblib
 import pandas as pd
 
+from app.services.smart_service import collect_smart_data
+
 
 MODEL_FILENAME = "smart_failure_model.joblib"
 MODEL_PATH = Path(__file__).resolve().parents[2] / "ml" / "models" / MODEL_FILENAME
@@ -31,6 +33,36 @@ MODEL_FEATURE_COLUMNS = [
     "has_reported_uncorrectable",
     "has_crc_errors",
 ]
+SMART_MODEL_INFO_FIELDS = (
+    "model_name",
+    "target_column",
+    "prediction_mode",
+    "best_threshold",
+    "balanced_model_name",
+    "balanced_threshold",
+    "safety_model_name",
+    "safety_threshold",
+    "split_mode",
+    "test_start_date",
+    "feature_columns",
+    "balanced_threshold_metrics",
+    "safety_threshold_metrics",
+)
+SMART_DRIVE_COLLECTION_KEYS = ("drives", "disks", "devices")
+SMART_DRIVE_TO_MODEL_FIELDS = {
+    "smart_1_raw": "raw_read_error_rate",
+    "smart_5_raw": "reallocated_sectors_count",
+    "smart_7_raw": "seek_error_rate",
+    "smart_9_raw": "power_on_hours",
+    "smart_12_raw": "power_cycle_count",
+    "smart_187_raw": "reported_uncorrectable_errors",
+    "smart_188_raw": "command_timeout",
+    "smart_194_raw": "temperature_celsius",
+    "smart_196_raw": "reallocated_event_count",
+    "smart_197_raw": "current_pending_sector_count",
+    "smart_198_raw": "offline_uncorrectable",
+    "smart_199_raw": "udma_crc_error_count",
+}
 
 
 def _to_float(value: object, default: float = 0.0) -> float:
@@ -64,6 +96,163 @@ def load_smart_model_artifact() -> dict[str, object]:
     if artifact.get("pipeline") is None:
         raise ValueError("SMART ML artifact does not contain 'pipeline'.")
     return artifact
+
+
+def _serialize_metadata_value(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(key): _serialize_metadata_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_metadata_value(item) for item in value]
+
+    item_method = getattr(value, "item", None)
+    if callable(item_method):
+        try:
+            return item_method()
+        except (TypeError, ValueError):
+            return value
+    return value
+
+
+def get_smart_model_info() -> dict[str, object]:
+    artifact = load_smart_model_artifact()
+    model_info: dict[str, object] = {}
+
+    for field_name in SMART_MODEL_INFO_FIELDS:
+        if field_name == "model_name":
+            value = artifact.get(field_name) or artifact.get("balanced_model_name")
+        elif field_name == "prediction_mode":
+            value = artifact.get(field_name) or "balanced"
+        elif field_name == "feature_columns":
+            value = artifact.get(field_name)
+            if not isinstance(value, list) or not value:
+                value = MODEL_FEATURE_COLUMNS
+        else:
+            value = artifact.get(field_name)
+        model_info[field_name] = _serialize_metadata_value(value)
+
+    return model_info
+
+
+def _extract_capacity_bytes(drive: dict[str, object]) -> int | None:
+    for field_name in ("capacity_bytes", "size_bytes"):
+        value = _to_float(drive.get(field_name), default=float("nan"))
+        if not math.isnan(value) and value > 0:
+            return int(value)
+
+    raw_sources = drive.get("raw")
+    if isinstance(raw_sources, dict):
+        smartctl_raw = raw_sources.get("smartctl")
+        if isinstance(smartctl_raw, dict):
+            payload = smartctl_raw.get("payload")
+            if isinstance(payload, dict):
+                user_capacity = payload.get("user_capacity")
+                if isinstance(user_capacity, dict):
+                    user_capacity_bytes = _to_float(
+                        user_capacity.get("bytes"),
+                        default=float("nan"),
+                    )
+                    if not math.isnan(user_capacity_bytes) and user_capacity_bytes > 0:
+                        return int(user_capacity_bytes)
+
+                nvme_total_capacity = _to_float(
+                    payload.get("nvme_total_capacity"),
+                    default=float("nan"),
+                )
+                if not math.isnan(nvme_total_capacity) and nvme_total_capacity > 0:
+                    return int(nvme_total_capacity)
+
+        windows_physical_disk_raw = raw_sources.get("windows_physical_disk")
+        if isinstance(windows_physical_disk_raw, dict):
+            physical_disk_size = _to_float(
+                windows_physical_disk_raw.get("Size"),
+                default=float("nan"),
+            )
+            if not math.isnan(physical_disk_size) and physical_disk_size > 0:
+                return int(physical_disk_size)
+
+    size_gb = _to_float(drive.get("size_gb"), default=float("nan"))
+    if not math.isnan(size_gb) and size_gb > 0:
+        return int(size_gb * (1024 ** 3))
+    return None
+
+
+def _extract_drive_candidates(
+    raw_smart_data: dict[str, object] | list[object] | object,
+) -> tuple[list[dict[str, object]], dict[str, object] | None]:
+    if isinstance(raw_smart_data, dict):
+        fallback_drives: list[dict[str, object]] = []
+        for field_name in SMART_DRIVE_COLLECTION_KEYS:
+            candidate_drives = raw_smart_data.get(field_name)
+            if isinstance(candidate_drives, list):
+                drive_dicts = [item for item in candidate_drives if isinstance(item, dict)]
+                if drive_dicts:
+                    return (
+                        drive_dicts,
+                        raw_smart_data.get("sources")
+                        if isinstance(raw_smart_data.get("sources"), dict)
+                        else None,
+                    )
+                fallback_drives = drive_dicts
+        if fallback_drives == [] and any(key in raw_smart_data for key in SMART_DRIVE_COLLECTION_KEYS):
+            return (
+                [],
+                raw_smart_data.get("sources")
+                if isinstance(raw_smart_data.get("sources"), dict)
+                else None,
+            )
+        return [raw_smart_data], None
+
+    if isinstance(raw_smart_data, list):
+        return [item for item in raw_smart_data if isinstance(item, dict)], None
+
+    return [], None
+
+
+def _build_predict_payload_from_drive(drive: dict[str, object]) -> dict[str, int | float | None]:
+    predict_payload: dict[str, int | float | None] = {
+        "capacity_bytes": _extract_capacity_bytes(drive),
+    }
+
+    for model_field, drive_field in SMART_DRIVE_TO_MODEL_FIELDS.items():
+        predict_payload[model_field] = _to_float(drive.get(drive_field), 0.0)
+
+    return predict_payload
+
+
+def _is_predictable_drive(drive: dict[str, object], predict_payload: dict[str, object]) -> bool:
+    if predict_payload.get("capacity_bytes") is not None:
+        return True
+    return any(drive.get(drive_field) is not None for drive_field in SMART_DRIVE_TO_MODEL_FIELDS.values())
+
+
+def _has_predictive_smart_values(drive: dict[str, object]) -> bool:
+    return any(drive.get(drive_field) is not None for drive_field in SMART_DRIVE_TO_MODEL_FIELDS.values())
+
+
+def extract_predictable_smart_payload(raw_smart_data: dict[str, object] | list[object] | object) -> dict[str, object]:
+    drives, sources = _extract_drive_candidates(raw_smart_data)
+    if not drives:
+        raise ValueError("SMART data does not contain any drives for prediction.")
+
+    ordered_drives = [
+        *[drive for drive in drives if _has_predictive_smart_values(drive)],
+        *[drive for drive in drives if not _has_predictive_smart_values(drive)],
+    ]
+
+    for drive in ordered_drives:
+        predict_payload = _build_predict_payload_from_drive(drive)
+        if not _is_predictable_drive(drive, predict_payload):
+            continue
+
+        normalized_features = prepare_smart_features(predict_payload)
+        return {
+            "source_drive": drive,
+            "predict_payload": predict_payload,
+            "normalized_features": normalized_features,
+            "sources": sources,
+        }
+
+    raise ValueError("SMART data does not contain a suitable drive with predictive SMART attributes.")
 
 
 def prepare_smart_features(smart_data: dict[str, object]) -> dict[str, float | int | None]:
@@ -157,4 +346,18 @@ def predict_smart_failure(smart_data: dict[str, object]) -> dict[str, object]:
         "status": "high_risk" if prediction == 1 else "normal",
         "recommendation": _build_recommendation(prediction, risk_percent),
         "features": prepared_features,
+    }
+
+
+def predict_current_smart_failure() -> dict[str, object]:
+    raw_smart_data = collect_smart_data()
+    extracted_payload = extract_predictable_smart_payload(raw_smart_data)
+    prediction = predict_smart_failure(extracted_payload["predict_payload"])
+
+    return {
+        "prediction": prediction,
+        "source_drive": extracted_payload["source_drive"],
+        "predict_payload": extracted_payload["predict_payload"],
+        "normalized_features": extracted_payload["normalized_features"],
+        "sources": extracted_payload["sources"],
     }

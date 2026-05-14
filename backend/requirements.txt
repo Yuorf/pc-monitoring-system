@@ -1,11 +1,10 @@
 fastapi>=0.115,<1.0
 pydantic-settings>=2.0,<3.0
-psutil
-sqlalchemy>=2.0,<3.0
-uvicorn[standard]>=0.30,<1.0
-psycopg2-binary
+joblib
 numpy
 pandas
-scikit-learn
-joblib
 psycopg2-binary
+psutil
+scikit-learn
+sqlalchemy>=2.0,<3.0
+uvicorn[standard]>=0.30,<1.0
