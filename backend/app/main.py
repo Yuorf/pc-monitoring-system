@@ -12,6 +12,7 @@ from app.models.measurement import Measurement
 from app.services.hardware_sensors import collect_hardware_sensors, extract_key_metrics
 from app.services.ml_prediction_service import (
     get_smart_model_info,
+    load_smart_model_artifact,
     predict_current_smart_failure,
     predict_smart_failure,
     sanitize_smart_drive_for_status,
@@ -292,6 +293,116 @@ def _merge_ml_prediction_into_status_payloads(
     return warnings_result, recommendations_result
 
 
+def _has_any_sensor_data(sensor_payload: object) -> bool:
+    if not isinstance(sensor_payload, dict):
+        return False
+
+    for field_name in (
+        "temperatures",
+        "fans",
+        "voltages",
+        "powers",
+        "clocks",
+        "loads",
+        "controls",
+        "data",
+    ):
+        field_value = sensor_payload.get(field_name)
+        if isinstance(field_value, list) and field_value:
+            return True
+    return False
+
+
+def _check_database_health() -> dict[str, object]:
+    try:
+        with SessionLocal() as db:
+            db.execute(text("SELECT 1"))
+        return {"status": "ok"}
+    except Exception as error:
+        return {
+            "status": "error",
+            "error": _safe_error_text(error),
+        }
+
+
+def _check_ml_model_health() -> dict[str, object]:
+    try:
+        artifact = load_smart_model_artifact()
+        return {
+            "status": "ok",
+            "model_name": artifact.get("model_name") or artifact.get("balanced_model_name"),
+            "prediction_mode": artifact.get("prediction_mode", "balanced"),
+            "target_column": artifact.get("target_column"),
+            "threshold": artifact.get("best_threshold"),
+        }
+    except Exception as error:
+        return {
+            "status": "error",
+            "error": _safe_error_text(error),
+        }
+
+
+def _check_sensors_health() -> dict[str, object]:
+    try:
+        sensor_payload = collect_hardware_sensors()
+        sources = sensor_payload.get("sources") if isinstance(sensor_payload, dict) else None
+        has_sources = isinstance(sources, dict) and any(bool(value) for value in sources.values())
+        has_sensor_data = _has_any_sensor_data(sensor_payload)
+        return {
+            "status": "ok" if has_sources or has_sensor_data else "partial",
+            "sources": sources if isinstance(sources, dict) else None,
+        }
+    except Exception as error:
+        return {
+            "status": "error",
+            "error": _safe_error_text(error),
+        }
+
+
+def _check_smart_health() -> dict[str, object]:
+    try:
+        smart_payload = collect_smart_data()
+        drives = smart_payload.get("drives") if isinstance(smart_payload, dict) else None
+        sources = smart_payload.get("sources") if isinstance(smart_payload, dict) else None
+        drives_count = len(drives) if isinstance(drives, list) else 0
+        return {
+            "status": "ok" if drives_count > 0 else "partial",
+            "drives_count": drives_count,
+            "sources": sources,
+        }
+    except Exception as error:
+        return {
+            "status": "error",
+            "error": _safe_error_text(error),
+        }
+
+
+def _build_health_check_payload() -> dict[str, object]:
+    checks = {
+        "backend": {"status": "ok"},
+        "database": _check_database_health(),
+        "ml_model": _check_ml_model_health(),
+        "sensors": _check_sensors_health(),
+        "smart": _check_smart_health(),
+    }
+
+    database_status = checks["database"].get("status")
+    ml_model_status = checks["ml_model"].get("status")
+    sensors_status = checks["sensors"].get("status")
+    smart_status = checks["smart"].get("status")
+
+    overall_status = "ok"
+    if database_status == "error" or ml_model_status == "error":
+        overall_status = "error"
+    elif sensors_status in {"partial", "error"} or smart_status in {"partial", "error"}:
+        overall_status = "partial"
+
+    return {
+        "status": overall_status,
+        "checks": checks,
+    }
+
+
 async def background_metrics_collector() -> None:
     while True:
         with SessionLocal() as db:
@@ -352,8 +463,8 @@ async def startup() -> None:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, object]:
+    return _build_health_check_payload()
 
 
 @app.get("/metrics/current")
