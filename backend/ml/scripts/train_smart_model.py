@@ -90,6 +90,18 @@ def parse_args() -> argparse.Namespace:
         help="Maximum number of target=0 rows to keep for training.",
     )
     parser.add_argument(
+        "--max-train-normal-rows",
+        type=int,
+        default=None,
+        help="Maximum number of target=0 rows to keep for the train period in split-mode=date.",
+    )
+    parser.add_argument(
+        "--max-test-normal-rows",
+        type=int,
+        default=None,
+        help="Maximum number of target=0 rows to keep for the test period in split-mode=date.",
+    )
+    parser.add_argument(
         "--random-state",
         type=int,
         default=42,
@@ -108,7 +120,6 @@ def load_dataset(
     input_path: Path,
     feature_columns: list[str],
     target_column: str,
-    split_mode: str,
     *,
     max_normal_rows: int,
     random_state: int,
@@ -122,15 +133,7 @@ def load_dataset(
         )
 
     header = pd.read_csv(input_path, nrows=0)
-    has_date_column = "date" in header.columns
-    if split_mode == "date" and not has_date_column:
-        raise ValueError(
-            "Dataset does not contain a 'date' column, but split-mode=date was requested."
-        )
-
     required_columns = feature_columns + [target_column]
-    if has_date_column:
-        required_columns.append("date")
 
     missing_columns = [column for column in required_columns if column not in header.columns]
     if missing_columns:
@@ -155,12 +158,7 @@ def load_dataset(
     ):
         total_rows_read += len(chunk)
 
-        if "date" in chunk.columns:
-            chunk["date"] = pd.to_datetime(chunk["date"], errors="coerce")
-
         for column in required_columns:
-            if column == "date":
-                continue
             chunk[column] = pd.to_numeric(chunk[column], errors="coerce")
 
         chunk = chunk.dropna(subset=[target_column]).copy()
@@ -212,6 +210,175 @@ def load_dataset(
         "normal_rows_used": int(len(normal_sample)),
     }
     return positive_df, normal_sample, stats
+
+
+def load_dataset_for_date_split(
+    input_path: Path,
+    feature_columns: list[str],
+    target_column: str,
+    *,
+    test_start_date: str,
+    max_train_normal_rows: int | None,
+    max_test_normal_rows: int | None,
+    random_state: int,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    if not input_path.exists():
+        raise FileNotFoundError(
+            "Processed dataset not found. Run "
+            "'python ml/scripts/prepare_backblaze_dataset.py' or "
+            "'python ml/scripts/prepare_backblaze_predictive_dataset.py' "
+            "from the backend directory first."
+        )
+
+    header = pd.read_csv(input_path, nrows=0)
+    if "date" not in header.columns:
+        raise ValueError(
+            "Dataset does not contain a 'date' column, but split-mode=date was requested."
+        )
+
+    split_timestamp = pd.to_datetime(test_start_date, errors="coerce")
+    if pd.isna(split_timestamp):
+        raise ValueError(
+            f"Could not parse test start date '{test_start_date}'. Expected format YYYY-MM-DD."
+        )
+
+    required_columns = feature_columns + [target_column, "date"]
+    missing_columns = [column for column in required_columns if column not in header.columns]
+    if missing_columns:
+        raise ValueError(
+            f"Dataset is missing required columns: {missing_columns}. "
+            "Rebuild the dataset with the matching prepare script for the selected target."
+        )
+
+    rng = np.random.default_rng(random_state)
+    train_positive_chunks: list[pd.DataFrame] = []
+    test_positive_chunks: list[pd.DataFrame] = []
+    train_normal_sample = pd.DataFrame(columns=required_columns)
+    test_normal_sample = pd.DataFrame(columns=required_columns)
+
+    total_rows_read = 0
+    positive_rows = 0
+    normal_rows_total = 0
+
+    train_normal_limit = max_train_normal_rows
+    test_normal_limit = max_test_normal_rows
+
+    for chunk in pd.read_csv(
+        input_path,
+        usecols=required_columns,
+        chunksize=CHUNK_SIZE,
+        low_memory=False,
+    ):
+        total_rows_read += len(chunk)
+
+        chunk["date"] = pd.to_datetime(chunk["date"], errors="coerce")
+        for column in required_columns:
+            if column == "date":
+                continue
+            chunk[column] = pd.to_numeric(chunk[column], errors="coerce")
+
+        chunk = chunk.dropna(subset=["date", target_column]).copy()
+        if chunk.empty:
+            continue
+
+        chunk[target_column] = chunk[target_column].astype(int)
+        chunk = chunk[chunk[target_column].isin([0, 1])].copy()
+        if chunk.empty:
+            continue
+
+        train_chunk = chunk.loc[chunk["date"] < split_timestamp].copy()
+        test_chunk = chunk.loc[chunk["date"] >= split_timestamp].copy()
+
+        for split_name, split_chunk in (("train", train_chunk), ("test", test_chunk)):
+            if split_chunk.empty:
+                continue
+
+            positive_chunk = split_chunk[split_chunk[target_column] == 1].copy()
+            normal_chunk = split_chunk[split_chunk[target_column] == 0].copy()
+
+            if not positive_chunk.empty:
+                positive_rows += len(positive_chunk)
+                positive_chunk["__split"] = split_name
+                if split_name == "train":
+                    train_positive_chunks.append(positive_chunk)
+                else:
+                    test_positive_chunks.append(positive_chunk)
+
+            if normal_chunk.empty:
+                continue
+
+            normal_rows_total += len(normal_chunk)
+            normal_limit = train_normal_limit if split_name == "train" else test_normal_limit
+            if normal_limit is not None and normal_limit <= 0:
+                continue
+
+            if split_name == "train":
+                combined_normal = pd.concat([train_normal_sample, normal_chunk], ignore_index=True)
+                if normal_limit is None or len(combined_normal) <= normal_limit:
+                    train_normal_sample = combined_normal
+                else:
+                    selected_indices = rng.choice(
+                        len(combined_normal),
+                        size=normal_limit,
+                        replace=False,
+                    )
+                    train_normal_sample = combined_normal.iloc[selected_indices].reset_index(drop=True)
+            else:
+                combined_normal = pd.concat([test_normal_sample, normal_chunk], ignore_index=True)
+                if normal_limit is None or len(combined_normal) <= normal_limit:
+                    test_normal_sample = combined_normal
+                else:
+                    selected_indices = rng.choice(
+                        len(combined_normal),
+                        size=normal_limit,
+                        replace=False,
+                    )
+                    test_normal_sample = combined_normal.iloc[selected_indices].reset_index(drop=True)
+
+    train_positive_df = (
+        pd.concat(train_positive_chunks, ignore_index=True)
+        if train_positive_chunks
+        else pd.DataFrame(columns=required_columns + ["__split"])
+    )
+    test_positive_df = (
+        pd.concat(test_positive_chunks, ignore_index=True)
+        if test_positive_chunks
+        else pd.DataFrame(columns=required_columns + ["__split"])
+    )
+
+    if not train_normal_sample.empty:
+        train_normal_sample = train_normal_sample.reset_index(drop=True)
+        train_normal_sample["__split"] = "train"
+    else:
+        train_normal_sample = pd.DataFrame(columns=required_columns + ["__split"])
+
+    if not test_normal_sample.empty:
+        test_normal_sample = test_normal_sample.reset_index(drop=True)
+        test_normal_sample["__split"] = "test"
+    else:
+        test_normal_sample = pd.DataFrame(columns=required_columns + ["__split"])
+
+    dataset = pd.concat(
+        [
+            train_positive_df,
+            test_positive_df,
+            train_normal_sample,
+            test_normal_sample,
+        ],
+        ignore_index=True,
+    )
+
+    stats = {
+        "total_rows_read": int(total_rows_read),
+        "positive_rows": int(positive_rows),
+        "normal_rows_total": int(normal_rows_total),
+        "normal_rows_used": int(len(train_normal_sample) + len(test_normal_sample)),
+        "train_positive_rows": int(len(train_positive_df)),
+        "train_normal_rows": int(len(train_normal_sample)),
+        "test_positive_rows": int(len(test_positive_df)),
+        "test_normal_rows": int(len(test_normal_sample)),
+    }
+    return dataset, stats
 
 
 def balance_dataset(
@@ -387,27 +554,31 @@ def train_and_select_model(
             stratify=y,
         )
     elif split_mode == "date":
-        if "date" not in dataset.columns:
-            raise ValueError("Dataset does not contain 'date', but split-mode=date was requested.")
-        if not test_start_date:
-            raise ValueError("Argument --test-start-date is required when --split-mode date is used.")
+        if "__split" in dataset.columns:
+            train_df = dataset.loc[dataset["__split"] == "train"].copy()
+            test_df = dataset.loc[dataset["__split"] == "test"].copy()
+        else:
+            if "date" not in dataset.columns:
+                raise ValueError("Dataset does not contain 'date', but split-mode=date was requested.")
+            if not test_start_date:
+                raise ValueError("Argument --test-start-date is required when --split-mode date is used.")
 
-        split_timestamp = pd.to_datetime(test_start_date, errors="coerce")
-        if pd.isna(split_timestamp):
-            raise ValueError(
-                f"Could not parse test start date '{test_start_date}'. Expected format YYYY-MM-DD."
-            )
+            split_timestamp = pd.to_datetime(test_start_date, errors="coerce")
+            if pd.isna(split_timestamp):
+                raise ValueError(
+                    f"Could not parse test start date '{test_start_date}'. Expected format YYYY-MM-DD."
+                )
 
-        dataset["date"] = pd.to_datetime(dataset["date"], errors="coerce")
-        dataset = dataset.dropna(subset=["date"]).copy()
-        if dataset.empty:
-            raise ValueError("Dataset became empty after dropping invalid date values for split-mode=date.")
+            dataset["date"] = pd.to_datetime(dataset["date"], errors="coerce")
+            dataset = dataset.dropna(subset=["date"]).copy()
+            if dataset.empty:
+                raise ValueError("Dataset became empty after dropping invalid date values for split-mode=date.")
 
-        train_mask = dataset["date"] < split_timestamp
-        test_mask = dataset["date"] >= split_timestamp
+            train_mask = dataset["date"] < split_timestamp
+            test_mask = dataset["date"] >= split_timestamp
+            train_df = dataset.loc[train_mask].copy()
+            test_df = dataset.loc[test_mask].copy()
 
-        train_df = dataset.loc[train_mask].copy()
-        test_df = dataset.loc[test_mask].copy()
         if train_df.empty or test_df.empty:
             raise ValueError(
                 "Date split produced an empty train or test set. Adjust --test-start-date."
@@ -537,29 +708,46 @@ def main() -> None:
     target_column = args.target
     split_mode = args.split_mode
     test_start_date = args.test_start_date
+    max_train_normal_rows = args.max_train_normal_rows
+    max_test_normal_rows = args.max_test_normal_rows
+
+    if split_mode == "date":
+        if max_train_normal_rows is None:
+            max_train_normal_rows = args.max_normal_rows
+        if max_test_normal_rows is None:
+            max_test_normal_rows = args.max_normal_rows
 
     try:
-        positive_df, normal_df, stats = load_dataset(
-            input_path,
-            FEATURE_COLUMNS,
-            target_column,
-            split_mode,
-            max_normal_rows=args.max_normal_rows,
-            random_state=args.random_state,
-        )
+        if split_mode == "date":
+            dataset, stats = load_dataset_for_date_split(
+                input_path,
+                FEATURE_COLUMNS,
+                target_column,
+                test_start_date=test_start_date,
+                max_train_normal_rows=max_train_normal_rows,
+                max_test_normal_rows=max_test_normal_rows,
+                random_state=args.random_state,
+            )
+        else:
+            positive_df, normal_df, stats = load_dataset(
+                input_path,
+                FEATURE_COLUMNS,
+                target_column,
+                max_normal_rows=args.max_normal_rows,
+                random_state=args.random_state,
+            )
+            dataset = balance_dataset(
+                positive_df,
+                normal_df,
+                target_column,
+                random_state=args.random_state,
+            )
     except FileNotFoundError as error:
         print(error)
         raise SystemExit(1) from error
     except ValueError as error:
         print(error)
         raise SystemExit(1) from error
-
-    dataset = balance_dataset(
-        positive_df,
-        normal_df,
-        target_column,
-        random_state=args.random_state,
-    )
 
     model_path = input_path.parent.parent.parent / "models" / "smart_failure_model.joblib"
     report_path = input_path.parent.parent.parent / "reports" / "smart_training_report.json"
@@ -590,16 +778,18 @@ def main() -> None:
         "test_start_date": test_start_date,
         "target_column": target_column,
         "input_path": str(input_path),
+        "max_train_normal_rows": max_train_normal_rows,
+        "max_test_normal_rows": max_test_normal_rows,
         "total_rows_read": stats["total_rows_read"],
         "positive_rows": stats["positive_rows"],
         "normal_rows_total": stats["normal_rows_total"],
         "normal_rows_used": stats["normal_rows_used"],
         "train_rows": split_stats["train_rows"],
         "test_rows": split_stats["test_rows"],
-        "train_positive_rows": split_stats["train_positive_rows"],
-        "train_normal_rows": split_stats["train_normal_rows"],
-        "test_positive_rows": split_stats["test_positive_rows"],
-        "test_normal_rows": split_stats["test_normal_rows"],
+        "train_positive_rows": split_stats["train_positive_rows"] if split_mode == "stratified" else stats["train_positive_rows"],
+        "train_normal_rows": split_stats["train_normal_rows"] if split_mode == "stratified" else stats["train_normal_rows"],
+        "test_positive_rows": split_stats["test_positive_rows"] if split_mode == "stratified" else stats["test_positive_rows"],
+        "test_normal_rows": split_stats["test_normal_rows"] if split_mode == "stratified" else stats["test_normal_rows"],
         "feature_columns": FEATURE_COLUMNS,
         "metrics_by_model": metrics_by_model,
         "best_model_name": best_model_name,
@@ -625,6 +815,8 @@ def main() -> None:
     print(f"Target column: {target_column}")
     print(f"Split mode: {split_mode}")
     print(f"Test start date: {test_start_date}")
+    print(f"Max train normal rows: {max_train_normal_rows}")
+    print(f"Max test normal rows: {max_test_normal_rows}")
     print(f"Total rows read: {stats['total_rows_read']}")
     print(f"Positive rows: {stats['positive_rows']}")
     print(f"Normal rows total: {stats['normal_rows_total']}")
@@ -633,11 +825,11 @@ def main() -> None:
     print(f"Test rows: {split_stats['test_rows']}")
     print(
         f"Train positive / normal: "
-        f"{split_stats['train_positive_rows']} / {split_stats['train_normal_rows']}"
+        f"{report['train_positive_rows']} / {report['train_normal_rows']}"
     )
     print(
         f"Test positive / normal: "
-        f"{split_stats['test_positive_rows']} / {split_stats['test_normal_rows']}"
+        f"{report['test_positive_rows']} / {report['test_normal_rows']}"
     )
     print(f"Feature columns: {FEATURE_COLUMNS}")
 
