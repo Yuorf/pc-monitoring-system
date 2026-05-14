@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import inspect, text
 
@@ -105,6 +105,32 @@ def measurement_to_dict(
     if include_device_id:
         payload["device_id"] = measurement.device_id
     return payload
+
+
+def _measurement_to_dashboard_history_item(
+    measurement: Measurement,
+) -> dict[str, object]:
+    return {
+        "id": measurement.id,
+        "recorded_at": (
+            measurement.recorded_at.isoformat()
+            if measurement.recorded_at is not None
+            else None
+        ),
+        "cpu_usage": measurement.cpu_usage,
+        "gpu_usage": measurement.gpu_usage,
+        "ram_usage": measurement.ram_usage,
+        "disk_usage": measurement.disk_usage,
+        "cpu_temperature": measurement.cpu_temperature,
+        "gpu_temperature": measurement.gpu_temperature,
+        "ram_temperature": measurement.ram_temperature,
+        "disk_temperature": measurement.disk_temperature,
+        "cpu_power": measurement.cpu_power,
+        "gpu_power": measurement.gpu_power,
+        "system_fan_rpm": measurement.system_fan_rpm,
+        "disk_life": measurement.disk_life,
+        "disk_power_on_hours": measurement.disk_power_on_hours,
+    }
 
 
 def _safe_error_text(error: Exception) -> str:
@@ -1112,6 +1138,48 @@ def get_dashboard() -> dict[str, object]:
         return _build_dashboard_payload(get_system_status())
     except Exception:
         return _build_dashboard_payload({})
+
+
+@app.get("/dashboard/history")
+def get_dashboard_history(
+    limit: int = Query(default=120, ge=1, le=1000),
+    device_id: int | None = Query(default=None),
+) -> dict[str, object]:
+    resolved_device_id = device_id if device_id is not None else 1
+
+    with SessionLocal() as db:
+        measurements = (
+            db.query(Measurement)
+            .filter(Measurement.device_id == resolved_device_id)
+            .order_by(Measurement.recorded_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+    ordered_measurements = list(reversed(measurements))
+    items = [
+        _measurement_to_dashboard_history_item(measurement)
+        for measurement in ordered_measurements
+    ]
+
+    return {
+        "device_id": resolved_device_id,
+        "limit": limit,
+        "count": len(items),
+        "items": items,
+        "series": {
+            "usage": ["cpu_usage", "gpu_usage", "ram_usage", "disk_usage"],
+            "temperatures": [
+                "cpu_temperature",
+                "gpu_temperature",
+                "ram_temperature",
+                "disk_temperature",
+            ],
+            "power": ["cpu_power", "gpu_power"],
+            "cooling": ["system_fan_rpm"],
+            "disk": ["disk_life", "disk_power_on_hours"],
+        },
+    }
 
 
 @app.post("/ml/smart/predict")
