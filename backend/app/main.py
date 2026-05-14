@@ -5,7 +5,14 @@ from fastapi import Body, FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import inspect, text
 
-from app.core.database import Base, SessionLocal, engine
+from app.core.database import (
+    Base,
+    DATABASE_FILE,
+    DATABASE_TYPE,
+    DATABASE_URL_CONFIGURED,
+    SessionLocal,
+    engine,
+)
 from app.core.config import settings
 from app.models.device import Device
 from app.models.measurement import Measurement
@@ -134,17 +141,17 @@ def _measurement_to_dashboard_history_item(
 
 
 def _get_dashboard_measurements(
+    db,
     device_id: int,
     limit: int,
 ) -> list[Measurement]:
-    with SessionLocal() as db:
-        measurements = (
-            db.query(Measurement)
-            .filter(Measurement.device_id == device_id)
-            .order_by(Measurement.recorded_at.desc())
-            .limit(limit)
-            .all()
-        )
+    measurements = (
+        db.query(Measurement)
+        .filter(Measurement.device_id == device_id)
+        .order_by(Measurement.recorded_at.desc())
+        .limit(limit)
+        .all()
+    )
 
     return list(reversed(measurements))
 
@@ -202,7 +209,7 @@ def _build_chart_series(
 
 def _build_dashboard_charts_payload(
     measurements: list[Measurement],
-    device_id: int,
+    device_id: int | None,
     limit: int,
 ) -> dict[str, object]:
     charts_config = {
@@ -277,6 +284,83 @@ def _build_dashboard_charts_payload(
 def _safe_error_text(error: Exception) -> str:
     error_text = str(error).strip()
     return error_text or error.__class__.__name__
+
+
+def _extract_system_component_name(
+    system_info: object,
+    component_key: str,
+    fallback: str,
+) -> str:
+    if not isinstance(system_info, dict):
+        return fallback
+
+    component = system_info.get(component_key)
+    if not isinstance(component, dict):
+        return fallback
+
+    name = component.get("name")
+    if not isinstance(name, str):
+        return fallback
+
+    normalized_name = name.strip()
+    return normalized_name or fallback
+
+
+def _create_default_device(db) -> Device | None:
+    cpu_name = "Unknown CPU"
+    gpu_name = "Unknown GPU"
+    try:
+        system_info = collect_system_info()
+        cpu_name = _extract_system_component_name(
+            system_info,
+            "cpu",
+            cpu_name,
+        )
+        gpu_name = _extract_system_component_name(
+            system_info,
+            "gpu",
+            gpu_name,
+        )
+    except Exception as error:
+        print(
+            "Failed to collect system info for default device creation: "
+            f"{_safe_error_text(error)}"
+        )
+
+    try:
+        device = Device(
+            name="Local PC",
+            cpu=cpu_name,
+            gpu=gpu_name,
+            created_at=datetime.utcnow(),
+        )
+        db.add(device)
+        db.commit()
+        db.refresh(device)
+        print(
+            "Created default device for local monitoring: "
+            f"name={device.name}, cpu={device.cpu}, gpu={device.gpu}"
+        )
+        return device
+    except Exception as error:
+        db.rollback()
+        print(f"Failed to create default device: {_safe_error_text(error)}")
+        return None
+
+
+def get_default_device(db) -> Device | None:
+    device = db.query(Device).order_by(Device.id.asc()).first()
+    if device is not None:
+        return device
+    return _create_default_device(db)
+
+
+def ensure_default_device_exists() -> None:
+    try:
+        with SessionLocal() as db:
+            get_default_device(db)
+    except Exception as error:
+        print(f"Failed to ensure default device exists: {_safe_error_text(error)}")
 
 
 def _unknown_component_status() -> dict[str, str]:
@@ -741,7 +825,10 @@ def _has_high_risk_drive(drives: list[object]) -> bool:
     return False
 
 
-def _build_dashboard_payload(system_status_payload: object) -> dict[str, object]:
+def _build_dashboard_payload(
+    system_status_payload: object,
+    device: Device | None = None,
+) -> dict[str, object]:
     metrics_data = _safe_dict(
         _safe_get_nested(system_status_payload, "metrics", "data", default={})
     )
@@ -852,6 +939,7 @@ def _build_dashboard_payload(system_status_payload: object) -> dict[str, object]
     ]
 
     return {
+        "device": _build_dashboard_device_payload(device),
         "overall": {
             "status": _normalize_dashboard_status(warnings_payload.get("status")),
             "health_score": _round_optional_number(warnings_payload.get("health_score")),
@@ -887,6 +975,22 @@ def _build_dashboard_payload(system_status_payload: object) -> dict[str, object]
         "external_tools": _safe_dict(
             _safe_get_nested(system_status_payload, "external_tools", default={})
         ),
+    }
+
+
+def _build_dashboard_device_payload(device: Device | None) -> dict[str, object]:
+    if device is None:
+        return {
+            "id": None,
+            "name": None,
+            "cpu": None,
+            "gpu": None,
+        }
+    return {
+        "id": device.id,
+        "name": device.name,
+        "cpu": device.cpu,
+        "gpu": device.gpu,
     }
 
 
@@ -1002,13 +1106,24 @@ def _has_any_sensor_data(sensor_payload: object) -> bool:
 
 
 def _check_database_health() -> dict[str, object]:
+    database_payload = {
+        "type": DATABASE_TYPE,
+        "url_configured": DATABASE_URL_CONFIGURED,
+    }
+    if DATABASE_TYPE == "sqlite":
+        database_payload["database_file"] = DATABASE_FILE
+
     try:
         with SessionLocal() as db:
             db.execute(text("SELECT 1"))
-        return {"status": "ok"}
+        return {
+            "status": "ok",
+            **database_payload,
+        }
     except Exception as error:
         return {
             "status": "error",
+            **database_payload,
             "error": _safe_error_text(error),
         }
 
@@ -1095,7 +1210,7 @@ def _build_health_check_payload() -> dict[str, object]:
 async def background_metrics_collector() -> None:
     while True:
         with SessionLocal() as db:
-            device = db.query(Device).filter(Device.id == 1).first()
+            device = get_default_device(db)
             if device is None:
                 print("Device for metrics collection not found")
             else:
@@ -1134,6 +1249,7 @@ async def startup() -> None:
             start_lhm_if_needed
         )
         Base.metadata.create_all(bind=engine)
+        await asyncio.to_thread(ensure_default_device_exists)
         with engine.begin() as connection:
             inspector = inspect(connection)
             measurement_columns = {
@@ -1149,7 +1265,7 @@ async def startup() -> None:
                 )
         with SessionLocal() as db:
             db.execute(text("SELECT 1"))
-            db.query(Device).filter(Device.id == 1).first()
+            get_default_device(db)
         asyncio.create_task(background_metrics_collector())
         print("Database connected")
     except Exception as error:
@@ -1276,7 +1392,9 @@ def get_system_status() -> dict[str, object]:
 @app.get("/dashboard")
 def get_dashboard() -> dict[str, object]:
     try:
-        return _build_dashboard_payload(get_system_status())
+        with SessionLocal() as db:
+            default_device = get_default_device(db)
+        return _build_dashboard_payload(get_system_status(), default_device)
     except Exception:
         return _build_dashboard_payload({})
 
@@ -1286,16 +1404,24 @@ def get_dashboard_history(
     limit: int = Query(default=120, ge=1, le=1000),
     device_id: int | None = Query(default=None),
 ) -> dict[str, object]:
-    resolved_device_id = device_id if device_id is not None else 1
-
-    ordered_measurements = _get_dashboard_measurements(resolved_device_id, limit)
+    with SessionLocal() as db:
+        resolved_device = (
+            db.query(Device).filter(Device.id == device_id).first()
+            if device_id is not None
+            else get_default_device(db)
+        )
+        ordered_measurements = (
+            _get_dashboard_measurements(db, resolved_device.id, limit)
+            if resolved_device is not None
+            else []
+        )
     items = [
         _measurement_to_dashboard_history_item(measurement)
         for measurement in ordered_measurements
     ]
 
     return {
-        "device_id": resolved_device_id,
+        "device_id": resolved_device.id if resolved_device is not None else None,
         "limit": limit,
         "count": len(items),
         "items": items,
@@ -1319,11 +1445,20 @@ def get_dashboard_charts(
     limit: int = Query(default=120, ge=1, le=1000),
     device_id: int | None = Query(default=None),
 ) -> dict[str, object]:
-    resolved_device_id = device_id if device_id is not None else 1
-    measurements = _get_dashboard_measurements(resolved_device_id, limit)
+    with SessionLocal() as db:
+        resolved_device = (
+            db.query(Device).filter(Device.id == device_id).first()
+            if device_id is not None
+            else get_default_device(db)
+        )
+        measurements = (
+            _get_dashboard_measurements(db, resolved_device.id, limit)
+            if resolved_device is not None
+            else []
+        )
     return _build_dashboard_charts_payload(
         measurements,
-        resolved_device_id,
+        resolved_device.id if resolved_device is not None else None,
         limit,
     )
 
