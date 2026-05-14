@@ -45,6 +45,17 @@ MEASUREMENT_COLUMN_TYPES = {
     "disk_power_on_hours": "INTEGER",
 }
 
+SENSOR_BUCKET_NAMES = (
+    "temperatures",
+    "fans",
+    "voltages",
+    "powers",
+    "clocks",
+    "loads",
+    "controls",
+    "data",
+)
+
 EXTERNAL_TOOLS_STATUS: dict[str, dict[str, object]] = {
     "libre_hardware_monitor": {
         "status": "not_started",
@@ -210,6 +221,249 @@ def _build_compact_smart_payload(smart_data: object) -> dict[str, object]:
         "available": True,
         "drives": compact_drives,
         "sources": smart_data.get("sources"),
+    }
+
+
+def _to_float(value: object) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _sensor_name(sensor: dict[str, object]) -> str:
+    return str(sensor.get("name", "")).lower()
+
+
+def _sensor_text(sensor: dict[str, object]) -> str:
+    return " ".join(
+        str(value).lower()
+        for value in (
+            sensor.get("component"),
+            sensor.get("name"),
+            sensor.get("source"),
+            sensor.get("unit"),
+        )
+        if value is not None
+    )
+
+
+def _match_keywords(text: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in text for keyword in keywords)
+
+
+def _collect_compact_sensors(
+    sensors_data: dict[str, object],
+    bucket: str,
+    *,
+    component: str | None = None,
+    include_keywords: tuple[str, ...] = (),
+    exclude_keywords: tuple[str, ...] = (),
+    required_unit: str | None = None,
+) -> list[dict[str, object]]:
+    raw_sensors = sensors_data.get(bucket, [])
+    if not isinstance(raw_sensors, list):
+        return []
+
+    matched: list[dict[str, object]] = []
+    for sensor in raw_sensors:
+        if not isinstance(sensor, dict):
+            continue
+        if component and str(sensor.get("component")).lower() != component.lower():
+            continue
+
+        text = _sensor_text(sensor)
+        if include_keywords and not _match_keywords(text, include_keywords):
+            continue
+        if exclude_keywords and _match_keywords(text, exclude_keywords):
+            continue
+        if required_unit is not None and str(sensor.get("unit", "")).strip() != required_unit:
+            continue
+        if _to_float(sensor.get("value")) is None:
+            continue
+        matched.append(sensor)
+
+    return matched
+
+
+def _max_sensor_value(sensors: list[dict[str, object]]) -> float | None:
+    values = [
+        value
+        for sensor in sensors
+        if (value := _to_float(sensor.get("value"))) is not None
+    ]
+    if not values:
+        return None
+    return max(values)
+
+
+def _is_nvidia_gpu_sensor(sensor: dict[str, object]) -> bool:
+    sensor_id = str(sensor.get("sensor_id", "")).lower()
+    source = str(sensor.get("source", "")).lower()
+    name = _sensor_name(sensor)
+    return (
+        "/gpu-nvidia/" in sensor_id
+        or source == "nvidia-smi"
+        or "nvidia" in name
+    )
+
+
+def _is_excluded_gpu_memory_sensor(sensor: dict[str, object]) -> bool:
+    name = _sensor_name(sensor)
+    excluded_name_parts = (
+        "d3d shared memory",
+        "d3d dedicated memory",
+        "shared memory",
+    )
+    return any(excluded_name_part in name for excluded_name_part in excluded_name_parts)
+
+
+def _matches_gpu_memory_sensor_name(
+    sensor: dict[str, object],
+    *,
+    exact_names: tuple[str, ...],
+    contains_names: tuple[str, ...],
+) -> bool:
+    name = _sensor_name(sensor)
+    normalized_name = " ".join(name.split())
+    if normalized_name in exact_names:
+        return True
+    return any(contains_name in normalized_name for contains_name in contains_names)
+
+
+def _pick_gpu_memory_value(
+    sensors: list[dict[str, object]],
+    *,
+    exact_names: tuple[str, ...],
+    contains_names: tuple[str, ...],
+) -> float | None:
+    filtered_sensors = [
+        sensor for sensor in sensors if not _is_excluded_gpu_memory_sensor(sensor)
+    ]
+    if not filtered_sensors:
+        return None
+
+    prioritized_groups = [
+        [
+            sensor
+            for sensor in filtered_sensors
+            if _is_nvidia_gpu_sensor(sensor)
+            and _matches_gpu_memory_sensor_name(
+                sensor,
+                exact_names=exact_names,
+                contains_names=contains_names,
+            )
+        ],
+        [
+            sensor
+            for sensor in filtered_sensors
+            if _matches_gpu_memory_sensor_name(
+                sensor,
+                exact_names=exact_names,
+                contains_names=contains_names,
+            )
+        ],
+        [
+            sensor for sensor in filtered_sensors if _is_nvidia_gpu_sensor(sensor)
+        ],
+        filtered_sensors,
+    ]
+
+    for group in prioritized_groups:
+        value = _max_sensor_value(group)
+        if value is not None:
+            return value
+
+    return None
+
+
+def _round_metric_value(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(value, 2)
+
+
+def _build_compact_sensors_payload(sensors_data: dict[str, object]) -> dict[str, object]:
+    summary = {
+        "cpu_temperature": None,
+        "gpu_temperature": None,
+        "ram_temperature": None,
+        "disk_temperature": None,
+        "cpu_power": None,
+        "gpu_power": None,
+        "system_fan_rpm": None,
+        "gpu_fan_percent": None,
+        "gpu_memory_used_mb": None,
+        "gpu_memory_total_mb": None,
+    }
+    counts = {
+        bucket: 0 for bucket in SENSOR_BUCKET_NAMES
+    }
+
+    if not isinstance(sensors_data, dict):
+        return {
+            "available": True,
+            "sources": None,
+            "summary": summary,
+            "counts": counts,
+        }
+
+    key_metrics = extract_key_metrics(sensors_data)
+    summary.update(
+        {
+            "cpu_temperature": key_metrics.get("cpu_temperature"),
+            "gpu_temperature": key_metrics.get("gpu_temperature"),
+            "ram_temperature": key_metrics.get("ram_temperature"),
+            "disk_temperature": key_metrics.get("disk_temperature"),
+            "cpu_power": key_metrics.get("cpu_power"),
+            "gpu_power": key_metrics.get("gpu_power"),
+            "system_fan_rpm": key_metrics.get("system_fan_rpm"),
+        }
+    )
+
+    gpu_fan_sensors = _collect_compact_sensors(
+        sensors_data,
+        "fans",
+        component="GPU",
+        required_unit="%",
+    )
+    if not gpu_fan_sensors:
+        gpu_fan_sensors = _collect_compact_sensors(
+            sensors_data,
+            "controls",
+            component="GPU",
+            required_unit="%",
+        )
+    summary["gpu_fan_percent"] = _round_metric_value(_max_sensor_value(gpu_fan_sensors))
+
+    gpu_data_sensors = _collect_compact_sensors(sensors_data, "data", component="GPU")
+    summary["gpu_memory_used_mb"] = _round_metric_value(
+        _pick_gpu_memory_value(
+            gpu_data_sensors,
+            exact_names=("gpu memory used",),
+            contains_names=("gpu memory used", "memory used", "vram used"),
+        )
+    )
+    summary["gpu_memory_total_mb"] = _round_metric_value(
+        _pick_gpu_memory_value(
+            gpu_data_sensors,
+            exact_names=("gpu memory total",),
+            contains_names=("gpu memory total", "memory total", "vram total"),
+        )
+    )
+
+    for bucket in SENSOR_BUCKET_NAMES:
+        bucket_value = sensors_data.get(bucket)
+        counts[bucket] = len(bucket_value) if isinstance(bucket_value, list) else 0
+
+    sources = sensors_data.get("sources")
+    return {
+        "available": True,
+        "sources": sources if isinstance(sources, dict) else None,
+        "summary": summary,
+        "counts": counts,
     }
 
 
@@ -553,10 +807,7 @@ def get_system_status() -> dict[str, object]:
 
     try:
         sensors_data = collect_hardware_sensors()
-        sensors_payload = {
-            "available": True,
-            **sensors_data,
-        }
+        sensors_payload = _build_compact_sensors_payload(sensors_data)
     except Exception as error:
         sensors_payload = {
             "available": False,
