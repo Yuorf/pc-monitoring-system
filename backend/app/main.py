@@ -497,6 +497,232 @@ def _build_compact_external_tools_payload() -> dict[str, object]:
     }
 
 
+def _safe_get_nested(
+    payload: object,
+    *keys: str,
+    default: object = None,
+) -> object:
+    current = payload
+    for key in keys:
+        if not isinstance(current, dict):
+            return default
+        if key not in current:
+            return default
+        current = current[key]
+    return current
+
+
+def _safe_dict(value: object) -> dict[str, object]:
+    return value.copy() if isinstance(value, dict) else {}
+
+
+def _safe_list(value: object) -> list[object]:
+    return value.copy() if isinstance(value, list) else []
+
+
+def _safe_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _round_optional_number(value: object, digits: int = 2) -> float | None:
+    numeric_value = _to_float(value)
+    if numeric_value is None:
+        return None
+    return round(numeric_value, digits)
+
+
+def _normalize_dashboard_status(value: object) -> str:
+    status_value = _safe_text(value)
+    if status_value in {"ok", "warning", "critical", "unknown"}:
+        return status_value
+    return "unknown"
+
+
+def _build_dashboard_card(
+    *,
+    card_id: str,
+    title: str,
+    status: object,
+    primary_value: object,
+    primary_unit: str,
+    secondary_value: object,
+    secondary_unit: str,
+    details: dict[str, object],
+) -> dict[str, object]:
+    return {
+        "id": card_id,
+        "title": title,
+        "status": _normalize_dashboard_status(status),
+        "primary_value": _round_optional_number(primary_value),
+        "primary_unit": primary_unit,
+        "secondary_value": _round_optional_number(secondary_value),
+        "secondary_unit": secondary_unit,
+        "details": details,
+    }
+
+
+def _has_high_risk_drive(drives: list[object]) -> bool:
+    for drive in drives:
+        if not isinstance(drive, dict):
+            continue
+        health_status = _safe_text(drive.get("health_status"))
+        if health_status and health_status.upper() not in {"PASSED", "OK"}:
+            return True
+    return False
+
+
+def _build_dashboard_payload(system_status_payload: object) -> dict[str, object]:
+    metrics_data = _safe_dict(
+        _safe_get_nested(system_status_payload, "metrics", "data", default={})
+    )
+    sensors_summary = _safe_dict(
+        _safe_get_nested(system_status_payload, "sensors", "summary", default={})
+    )
+    smart_payload = _safe_dict(_safe_get_nested(system_status_payload, "smart", default={}))
+    warnings_payload = _safe_dict(
+        _safe_get_nested(system_status_payload, "warnings", default={})
+    )
+    recommendations_payload = _safe_dict(
+        _safe_get_nested(system_status_payload, "recommendations", default={})
+    )
+    ml_prediction_payload = _safe_dict(
+        _safe_get_nested(system_status_payload, "ml_prediction", default={})
+    )
+    prediction_payload = _safe_dict(
+        _safe_get_nested(ml_prediction_payload, "prediction", default={})
+    )
+    components = _safe_dict(_safe_get_nested(warnings_payload, "components", default={}))
+    smart_drives = _safe_list(smart_payload.get("drives"))
+
+    ml_risk_percent = _round_optional_number(prediction_payload.get("risk_percent"))
+    ml_status = _safe_text(prediction_payload.get("status"))
+    high_risk = bool(
+        ml_status == "high_risk"
+        or (
+            isinstance(ml_risk_percent, (int, float))
+            and ml_risk_percent >= 50
+        )
+        or _has_high_risk_drive(smart_drives)
+    )
+
+    cards = [
+        _build_dashboard_card(
+            card_id="cpu",
+            title="CPU",
+            status=components.get("CPU"),
+            primary_value=metrics_data.get("cpu_usage"),
+            primary_unit="%",
+            secondary_value=sensors_summary.get("cpu_temperature"),
+            secondary_unit="°C",
+            details={
+                "usage_percent": _round_optional_number(metrics_data.get("cpu_usage")),
+                "temperature_celsius": _round_optional_number(
+                    sensors_summary.get("cpu_temperature")
+                ),
+                "power_watts": _round_optional_number(sensors_summary.get("cpu_power")),
+            },
+        ),
+        _build_dashboard_card(
+            card_id="gpu",
+            title="GPU",
+            status=components.get("GPU"),
+            primary_value=metrics_data.get("gpu_usage"),
+            primary_unit="%",
+            secondary_value=sensors_summary.get("gpu_temperature"),
+            secondary_unit="°C",
+            details={
+                "usage_percent": _round_optional_number(metrics_data.get("gpu_usage")),
+                "temperature_celsius": _round_optional_number(
+                    sensors_summary.get("gpu_temperature")
+                ),
+                "power_watts": _round_optional_number(sensors_summary.get("gpu_power")),
+                "fan_percent": _round_optional_number(
+                    sensors_summary.get("gpu_fan_percent")
+                ),
+                "memory_used_mb": _round_optional_number(
+                    sensors_summary.get("gpu_memory_used_mb")
+                ),
+                "memory_total_mb": _round_optional_number(
+                    sensors_summary.get("gpu_memory_total_mb")
+                ),
+            },
+        ),
+        _build_dashboard_card(
+            card_id="ram",
+            title="RAM",
+            status=components.get("RAM"),
+            primary_value=metrics_data.get("ram_usage"),
+            primary_unit="%",
+            secondary_value=sensors_summary.get("ram_temperature"),
+            secondary_unit="°C",
+            details={
+                "usage_percent": _round_optional_number(metrics_data.get("ram_usage")),
+                "temperature_celsius": _round_optional_number(
+                    sensors_summary.get("ram_temperature")
+                ),
+            },
+        ),
+        _build_dashboard_card(
+            card_id="disk",
+            title="Disk",
+            status=components.get("Disk"),
+            primary_value=metrics_data.get("disk_usage"),
+            primary_unit="%",
+            secondary_value=sensors_summary.get("disk_temperature"),
+            secondary_unit="°C",
+            details={
+                "usage_percent": _round_optional_number(metrics_data.get("disk_usage")),
+                "temperature_celsius": _round_optional_number(
+                    sensors_summary.get("disk_temperature")
+                ),
+                "drives_count": len(smart_drives),
+                "high_risk": high_risk,
+            },
+        ),
+    ]
+
+    return {
+        "overall": {
+            "status": _normalize_dashboard_status(warnings_payload.get("status")),
+            "health_score": _round_optional_number(warnings_payload.get("health_score")),
+            "updated_at": f"{datetime.utcnow().isoformat()}Z",
+        },
+        "cards": cards,
+        "smart": {
+            "drives": smart_drives,
+            "sources": (
+                smart_payload.get("sources")
+                if isinstance(smart_payload.get("sources"), dict)
+                else None
+            ),
+        },
+        "ml_prediction": {
+            "available": bool(ml_prediction_payload.get("available")),
+            "risk_percent": ml_risk_percent,
+            "status": ml_status,
+            "source_drive": (
+                ml_prediction_payload.get("source_drive")
+                if isinstance(ml_prediction_payload.get("source_drive"), dict)
+                else None
+            ),
+            "recommendation": _safe_text(prediction_payload.get("recommendation")),
+        },
+        "warnings": {
+            "status": _normalize_dashboard_status(warnings_payload.get("status")),
+            "items": _safe_list(warnings_payload.get("items")),
+        },
+        "recommendations": {
+            "items": _safe_list(recommendations_payload.get("items")),
+        },
+        "external_tools": _safe_dict(
+            _safe_get_nested(system_status_payload, "external_tools", default={})
+        ),
+    }
+
+
 def _merge_ml_prediction_into_status_payloads(
     warnings_payload: object,
     recommendations_payload: object,
@@ -878,6 +1104,14 @@ def get_system_status() -> dict[str, object]:
         "recommendations": recommendations_payload,
         "ml_prediction": ml_prediction_payload,
     }
+
+
+@app.get("/dashboard")
+def get_dashboard() -> dict[str, object]:
+    try:
+        return _build_dashboard_payload(get_system_status())
+    except Exception:
+        return _build_dashboard_payload({})
 
 
 @app.post("/ml/smart/predict")
