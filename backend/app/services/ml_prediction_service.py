@@ -63,6 +63,28 @@ SMART_DRIVE_TO_MODEL_FIELDS = {
     "smart_198_raw": "offline_uncorrectable",
     "smart_199_raw": "udma_crc_error_count",
 }
+SMART_STATUS_DRIVE_FIELDS = (
+    "name",
+    "model",
+    "serial",
+    "interface",
+    "media_type",
+    "size_gb",
+    "health_status",
+    "temperature_celsius",
+    "power_on_hours",
+    "power_cycle_count",
+    "reallocated_sectors_count",
+    "current_pending_sector_count",
+    "offline_uncorrectable",
+    "reported_uncorrectable_errors",
+    "udma_crc_error_count",
+    "raw_read_error_rate",
+    "seek_error_rate",
+    "reallocated_event_count",
+    "command_timeout",
+    "smartctl_exit_status",
+)
 
 
 def _to_float(value: object, default: float = 0.0) -> float:
@@ -131,6 +153,16 @@ def get_smart_model_info() -> dict[str, object]:
         model_info[field_name] = _serialize_metadata_value(value)
 
     return model_info
+
+
+def sanitize_smart_drive_for_status(drive: object) -> dict[str, object] | None:
+    if not isinstance(drive, dict):
+        return None
+
+    return {
+        field_name: drive.get(field_name)
+        for field_name in SMART_STATUS_DRIVE_FIELDS
+    }
 
 
 def _extract_capacity_bytes(drive: dict[str, object]) -> int | None:
@@ -353,10 +385,12 @@ def predict_current_smart_failure() -> dict[str, object]:
     raw_smart_data = collect_smart_data()
     extracted_payload = extract_predictable_smart_payload(raw_smart_data)
     prediction = predict_smart_failure(extracted_payload["predict_payload"])
+    source_drive = extracted_payload.get("source_drive")
 
     return {
         "prediction": prediction,
-        "source_drive": extracted_payload["source_drive"],
+        "source_drive": source_drive,
+        "source_drive_summary": sanitize_smart_drive_for_status(source_drive),
         "predict_payload": extracted_payload["predict_payload"],
         "normalized_features": extracted_payload["normalized_features"],
         "sources": extracted_payload["sources"],

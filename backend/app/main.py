@@ -14,6 +14,7 @@ from app.services.ml_prediction_service import (
     get_smart_model_info,
     predict_current_smart_failure,
     predict_smart_failure,
+    sanitize_smart_drive_for_status,
 )
 from app.services.smart_service import collect_smart_data
 from app.services.system_info import collect_system_info
@@ -177,6 +178,29 @@ def _build_system_status_analysis(
         return warnings_payload, recommendations_payload
 
 
+def _build_compact_smart_payload(smart_data: object) -> dict[str, object]:
+    if not isinstance(smart_data, dict):
+        return {
+            "available": True,
+            "drives": [],
+            "sources": None,
+        }
+
+    raw_drives = smart_data.get("drives")
+    compact_drives: list[dict[str, object]] = []
+    if isinstance(raw_drives, list):
+        for drive in raw_drives:
+            compact_drive = sanitize_smart_drive_for_status(drive)
+            if compact_drive is not None:
+                compact_drives.append(compact_drive)
+
+    return {
+        "available": True,
+        "drives": compact_drives,
+        "sources": smart_data.get("sources"),
+    }
+
+
 async def background_metrics_collector() -> None:
     while True:
         with SessionLocal() as db:
@@ -292,27 +316,44 @@ def get_system_status() -> dict[str, object]:
 
     try:
         smart_data = collect_smart_data()
-        smart_payload = {
-            "available": True,
-            **smart_data,
-        }
+        smart_payload = _build_compact_smart_payload(smart_data)
     except Exception as error:
         smart_payload = {
             "available": False,
             "error": _safe_error_text(error),
         }
 
-    warnings_payload, recommendations_payload = _build_system_status_analysis(
+    analysis_payload = _build_system_status_analysis(
         metrics_data,
         sensors_data,
     )
+    if (
+        not isinstance(analysis_payload, tuple)
+        or len(analysis_payload) != 2
+        or not all(isinstance(item, dict) for item in analysis_payload)
+    ):
+        warnings_payload = {
+            "available": False,
+            "status": "unknown",
+            "health_score": None,
+            "components": _unknown_component_status(),
+            "items": [],
+            "error": "System status analysis returned an unexpected result.",
+        }
+        recommendations_payload = {
+            "available": False,
+            "items": [],
+            "error": "System status analysis returned an unexpected result.",
+        }
+    else:
+        warnings_payload, recommendations_payload = analysis_payload
 
     try:
         ml_prediction_result = predict_current_smart_failure()
         ml_prediction_payload = {
             "available": True,
             "prediction": ml_prediction_result.get("prediction"),
-            "source_drive": ml_prediction_result.get("source_drive"),
+            "source_drive": ml_prediction_result.get("source_drive_summary"),
             "predict_payload": ml_prediction_result.get("predict_payload"),
             "normalized_features": ml_prediction_result.get("normalized_features"),
         }
