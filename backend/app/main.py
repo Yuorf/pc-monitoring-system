@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime
 
 from fastapi import Body, FastAPI, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import inspect, text
 
 from app.core.database import Base, SessionLocal, engine
@@ -9,6 +10,7 @@ from app.core.config import settings
 from app.models.device import Device
 from app.models.measurement import Measurement
 from app.services.hardware_sensors import collect_hardware_sensors, extract_key_metrics
+from app.services.ml_prediction_service import predict_smart_failure
 from app.services.smart_service import collect_smart_data
 from app.services.system_info import collect_system_info
 from app.services.system_metrics import collect_current_metrics
@@ -32,6 +34,22 @@ MEASUREMENT_COLUMN_TYPES = {
     "disk_life": "FLOAT",
     "disk_power_on_hours": "INTEGER",
 }
+
+
+class SmartPredictionRequest(BaseModel):
+    capacity_bytes: int | None = None
+    smart_1_raw: float | None = 0
+    smart_5_raw: float | None = 0
+    smart_7_raw: float | None = 0
+    smart_9_raw: float | None = 0
+    smart_12_raw: float | None = 0
+    smart_187_raw: float | None = 0
+    smart_188_raw: float | None = 0
+    smart_194_raw: float | None = 0
+    smart_196_raw: float | None = 0
+    smart_197_raw: float | None = 0
+    smart_198_raw: float | None = 0
+    smart_199_raw: float | None = 0
 
 
 def measurement_to_dict(
@@ -143,6 +161,11 @@ def get_system_sensors() -> dict[str, object]:
 @app.get("/system/smart")
 def get_system_smart() -> dict[str, object]:
     return collect_smart_data()
+
+
+@app.post("/ml/smart/predict")
+def predict_ml_smart(request: SmartPredictionRequest) -> dict[str, object]:
+    return predict_smart_failure(request.model_dump())
 
 
 @app.post("/devices")
