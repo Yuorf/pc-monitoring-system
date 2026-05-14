@@ -201,6 +201,97 @@ def _build_compact_smart_payload(smart_data: object) -> dict[str, object]:
     }
 
 
+def _merge_ml_prediction_into_status_payloads(
+    warnings_payload: object,
+    recommendations_payload: object,
+    ml_prediction_payload: object,
+) -> tuple[dict[str, object], dict[str, object]]:
+    warnings_result = warnings_payload.copy() if isinstance(warnings_payload, dict) else {}
+    recommendations_result = (
+        recommendations_payload.copy()
+        if isinstance(recommendations_payload, dict)
+        else {}
+    )
+
+    if not isinstance(ml_prediction_payload, dict):
+        return warnings_result, recommendations_result
+    if ml_prediction_payload.get("available") is not True:
+        return warnings_result, recommendations_result
+
+    prediction_payload = ml_prediction_payload.get("prediction")
+    if not isinstance(prediction_payload, dict):
+        return warnings_result, recommendations_result
+    if prediction_payload.get("prediction") != 1:
+        return warnings_result, recommendations_result
+
+    ml_warning_message = (
+        "ML-\u043c\u043e\u0434\u0435\u043b\u044c \u0432\u044b\u044f\u0432\u0438\u043b\u0430 "
+        "\u043f\u043e\u0432\u044b\u0448\u0435\u043d\u043d\u044b\u0439 \u0440\u0438\u0441\u043a "
+        "\u043e\u0442\u043a\u0430\u0437\u0430 \u043d\u0430\u043a\u043e\u043f\u0438\u0442\u0435\u043b\u044f "
+        "\u0432 \u0442\u0435\u0447\u0435\u043d\u0438\u0435 30 \u0434\u043d\u0435\u0439."
+    )
+    risk_percent = prediction_payload.get("risk_percent")
+    warning_item = {
+        "level": "critical",
+        "component": "Disk",
+        "metric": "ml_smart_failure_prediction",
+        "value": risk_percent,
+        "unit": "%",
+        "message": ml_warning_message,
+    }
+
+    warning_items = warnings_result.get("items")
+    if not isinstance(warning_items, list):
+        warning_items = []
+    if not any(
+        isinstance(item, dict) and item.get("metric") == "ml_smart_failure_prediction"
+        for item in warning_items
+    ):
+        warning_items.append(warning_item)
+    warnings_result["items"] = warning_items
+    warnings_result["available"] = True
+
+    components = warnings_result.get("components")
+    if not isinstance(components, dict):
+        components = _unknown_component_status()
+    components["Disk"] = "critical"
+    warnings_result["components"] = components
+
+    current_status = warnings_result.get("status")
+    if current_status != "critical":
+        warnings_result["status"] = "critical"
+
+    current_health_score = warnings_result.get("health_score")
+    if isinstance(current_health_score, (int, float)):
+        warnings_result["health_score"] = min(current_health_score, 60)
+    else:
+        warnings_result["health_score"] = 60
+
+    recommendation_items = recommendations_result.get("items")
+    if not isinstance(recommendation_items, list):
+        recommendation_items = []
+
+    ml_recommendation_message = prediction_payload.get("recommendation")
+    if isinstance(ml_recommendation_message, str) and ml_recommendation_message.strip():
+        if not any(
+            isinstance(item, dict) and item.get("message") == ml_recommendation_message
+            for item in recommendation_items
+        ):
+            recommendation_items.append(
+                {
+                    "priority": "high",
+                    "component": "Disk",
+                    "metric": "ml_smart_failure_prediction",
+                    "message": ml_recommendation_message,
+                    "reason": ml_warning_message,
+                }
+            )
+
+    recommendations_result["items"] = recommendation_items
+    recommendations_result["available"] = True
+    return warnings_result, recommendations_result
+
+
 async def background_metrics_collector() -> None:
     while True:
         with SessionLocal() as db:
@@ -362,6 +453,12 @@ def get_system_status() -> dict[str, object]:
             "available": False,
             "error": _safe_error_text(error),
         }
+
+    warnings_payload, recommendations_payload = _merge_ml_prediction_into_status_payloads(
+        warnings_payload,
+        recommendations_payload,
+        ml_prediction_payload,
+    )
 
     return {
         "metrics": metrics_payload,
