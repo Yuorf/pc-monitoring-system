@@ -9,6 +9,10 @@ from app.core.database import Base, SessionLocal, engine
 from app.core.config import settings
 from app.models.device import Device
 from app.models.measurement import Measurement
+from app.services.external_tools_service import (
+    LHM_PROCESS_NAME,
+    start_lhm_if_needed,
+)
 from app.services.hardware_sensors import collect_hardware_sensors, extract_key_metrics
 from app.services.ml_prediction_service import (
     get_smart_model_info,
@@ -39,6 +43,13 @@ MEASUREMENT_COLUMN_TYPES = {
     "system_fan_rpm": "FLOAT",
     "disk_life": "FLOAT",
     "disk_power_on_hours": "INTEGER",
+}
+
+EXTERNAL_TOOLS_STATUS: dict[str, dict[str, object]] = {
+    "libre_hardware_monitor": {
+        "status": "not_started",
+        "process_name": LHM_PROCESS_NAME,
+    }
 }
 
 
@@ -199,6 +210,36 @@ def _build_compact_smart_payload(smart_data: object) -> dict[str, object]:
         "available": True,
         "drives": compact_drives,
         "sources": smart_data.get("sources"),
+    }
+
+
+def _copy_lhm_status_payload() -> dict[str, object]:
+    status_payload = EXTERNAL_TOOLS_STATUS.get("libre_hardware_monitor")
+    if isinstance(status_payload, dict):
+        return status_payload.copy()
+    return {
+        "status": "unknown",
+        "process_name": LHM_PROCESS_NAME,
+    }
+
+
+def _build_compact_external_tools_payload() -> dict[str, object]:
+    lhm_status = _copy_lhm_status_payload()
+    compact_payload = {
+        "status": lhm_status.get("status", "unknown"),
+        "process_name": lhm_status.get("process_name", LHM_PROCESS_NAME),
+    }
+
+    exe_path = lhm_status.get("exe_path")
+    if isinstance(exe_path, str) and exe_path:
+        compact_payload["exe_path"] = exe_path
+
+    error = lhm_status.get("error")
+    if isinstance(error, str) and error:
+        compact_payload["error"] = error
+
+    return {
+        "libre_hardware_monitor": compact_payload,
     }
 
 
@@ -384,6 +425,7 @@ def _build_health_check_payload() -> dict[str, object]:
         "ml_model": _check_ml_model_health(),
         "sensors": _check_sensors_health(),
         "smart": _check_smart_health(),
+        "libre_hardware_monitor": _copy_lhm_status_payload(),
     }
 
     database_status = checks["database"].get("status")
@@ -438,7 +480,12 @@ async def background_metrics_collector() -> None:
 
 @app.on_event("startup")
 async def startup() -> None:
+    global EXTERNAL_TOOLS_STATUS
+
     try:
+        EXTERNAL_TOOLS_STATUS["libre_hardware_monitor"] = await asyncio.to_thread(
+            start_lhm_if_needed
+        )
         Base.metadata.create_all(bind=engine)
         with engine.begin() as connection:
             inspector = inspect(connection)
@@ -575,6 +622,7 @@ def get_system_status() -> dict[str, object]:
         "metrics": metrics_payload,
         "sensors": sensors_payload,
         "smart": smart_payload,
+        "external_tools": _build_compact_external_tools_payload(),
         "warnings": warnings_payload,
         "recommendations": recommendations_payload,
         "ml_prediction": ml_prediction_payload,

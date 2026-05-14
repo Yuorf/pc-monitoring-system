@@ -16,3 +16,5 @@ backend/ml/models_local_backup/
 backend/ml/reports_local_backup/
 __pycache__/
 *.pyc
+backend/tools/LibreHardwareMonitor/
+tools/LibreHardwareMonitor/
