@@ -8,3 +8,11 @@ backend/ml/models/*.pkl
 backend/ml/models/*.joblib
 backend/ml/reports/*.csv
 backend/ml/reports/*.json
+
+backend/ml/data/
+backend/ml/models/
+backend/ml/reports/
+backend/ml/models_local_backup/
+backend/ml/reports_local_backup/
+__pycache__/
+*.pyc
