@@ -83,6 +83,100 @@ def measurement_to_dict(
     return payload
 
 
+def _safe_error_text(error: Exception) -> str:
+    error_text = str(error).strip()
+    return error_text or error.__class__.__name__
+
+
+def _unknown_component_status() -> dict[str, str]:
+    return {
+        "CPU": "unknown",
+        "GPU": "unknown",
+        "RAM": "unknown",
+        "Disk": "unknown",
+        "Cooling": "unknown",
+    }
+
+
+def _build_status_measurement(
+    metrics: dict[str, object] | None,
+    key_metrics: dict[str, object] | None,
+) -> Measurement:
+    metrics = metrics or {}
+    key_metrics = key_metrics or {}
+    measurement = Measurement(
+        device_id=None,
+        cpu_usage=metrics.get("cpu_usage"),
+        gpu_usage=metrics.get("gpu_usage"),
+        ram_usage=metrics.get("ram_usage"),
+        disk_usage=metrics.get("disk_usage"),
+        cpu_temperature=key_metrics.get("cpu_temperature"),
+        gpu_temperature=key_metrics.get("gpu_temperature"),
+        ram_temperature=key_metrics.get("ram_temperature"),
+        disk_temperature=key_metrics.get("disk_temperature"),
+        cpu_power=key_metrics.get("cpu_power"),
+        gpu_power=key_metrics.get("gpu_power"),
+        system_fan_rpm=key_metrics.get("system_fan_rpm"),
+        disk_life=key_metrics.get("disk_life"),
+        disk_power_on_hours=key_metrics.get("disk_power_on_hours"),
+        recorded_at=datetime.utcnow(),
+    )
+    return measurement
+
+
+def _build_system_status_analysis(
+    metrics: dict[str, object] | None,
+    sensors: dict[str, object] | None,
+) -> tuple[dict[str, object], dict[str, object]]:
+    if metrics is None and sensors is None:
+        warnings_payload = {
+            "available": False,
+            "status": "unknown",
+            "health_score": None,
+            "components": _unknown_component_status(),
+            "items": [],
+            "error": "System metrics and sensors are unavailable.",
+        }
+        recommendations_payload = {
+            "available": False,
+            "items": [],
+            "error": "System metrics and sensors are unavailable.",
+        }
+        return warnings_payload, recommendations_payload
+
+    try:
+        key_metrics = extract_key_metrics(sensors) if sensors is not None else {}
+        analysis = analyze_measurement(_build_status_measurement(metrics, key_metrics))
+        warnings_payload = {
+            "available": True,
+            "status": analysis["status"],
+            "health_score": analysis["health_score"],
+            "components": build_component_status(analysis["warnings"]),
+            "items": analysis["warnings"],
+        }
+        recommendations_payload = {
+            "available": True,
+            "items": build_recommendations(analysis["warnings"]),
+        }
+        return warnings_payload, recommendations_payload
+    except Exception as error:
+        error_text = _safe_error_text(error)
+        warnings_payload = {
+            "available": False,
+            "status": "unknown",
+            "health_score": None,
+            "components": _unknown_component_status(),
+            "items": [],
+            "error": error_text,
+        }
+        recommendations_payload = {
+            "available": False,
+            "items": [],
+            "error": error_text,
+        }
+        return warnings_payload, recommendations_payload
+
+
 async def background_metrics_collector() -> None:
     while True:
         with SessionLocal() as db:
@@ -165,6 +259,77 @@ def get_system_sensors() -> dict[str, object]:
 @app.get("/system/smart")
 def get_system_smart() -> dict[str, object]:
     return collect_smart_data()
+
+
+@app.get("/system/status")
+def get_system_status() -> dict[str, object]:
+    metrics_data: dict[str, object] | None = None
+    sensors_data: dict[str, object] | None = None
+
+    try:
+        metrics_data = collect_current_metrics()
+        metrics_payload: dict[str, object] = {
+            "available": True,
+            "data": metrics_data,
+        }
+    except Exception as error:
+        metrics_payload = {
+            "available": False,
+            "error": _safe_error_text(error),
+        }
+
+    try:
+        sensors_data = collect_hardware_sensors()
+        sensors_payload = {
+            "available": True,
+            **sensors_data,
+        }
+    except Exception as error:
+        sensors_payload = {
+            "available": False,
+            "error": _safe_error_text(error),
+        }
+
+    try:
+        smart_data = collect_smart_data()
+        smart_payload = {
+            "available": True,
+            **smart_data,
+        }
+    except Exception as error:
+        smart_payload = {
+            "available": False,
+            "error": _safe_error_text(error),
+        }
+
+    warnings_payload, recommendations_payload = _build_system_status_analysis(
+        metrics_data,
+        sensors_data,
+    )
+
+    try:
+        ml_prediction_result = predict_current_smart_failure()
+        ml_prediction_payload = {
+            "available": True,
+            "prediction": ml_prediction_result.get("prediction"),
+            "source_drive": ml_prediction_result.get("source_drive"),
+            "predict_payload": ml_prediction_result.get("predict_payload"),
+            "normalized_features": ml_prediction_result.get("normalized_features"),
+        }
+    except Exception as error:
+        ml_prediction_payload = {
+            "available": False,
+            "error": _safe_error_text(error),
+        }
+
+    return {
+        "metrics": metrics_payload,
+        "sensors": sensors_payload,
+        "smart": smart_payload,
+        "warnings": warnings_payload,
+        "recommendations": recommendations_payload,
+        "ml_prediction": ml_prediction_payload,
+    }
 
 
 @app.post("/ml/smart/predict")
