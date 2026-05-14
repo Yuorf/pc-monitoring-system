@@ -485,22 +485,43 @@ def evaluate_model(
         scores = predictions
 
     average_precision = float(average_precision_score(y_test, scores))
+    roc_auc = float(roc_auc_score(y_test, scores))
     default_confusion_matrix = confusion_matrix(y_test, predictions, labels=[0, 1]).tolist()
     threshold_metrics = evaluate_thresholds(y_test, np.asarray(scores))
 
-    recall_eligible_thresholds = [
-        metrics for metrics in threshold_metrics if metrics["recall"] >= 0.80
-    ]
-    threshold_pool = recall_eligible_thresholds or threshold_metrics
-    best_threshold_metrics = max(
-        threshold_pool,
+    balanced_threshold_metrics = max(
+        threshold_metrics,
         key=lambda metrics: (
             metrics["f1"],
             metrics["precision"],
-            -metrics["false_positive"],
+            metrics["recall"],
             metrics["threshold"],
         ),
     )
+
+    safety_recall_eligible_thresholds = [
+        metrics for metrics in threshold_metrics if metrics["recall"] >= 0.80
+    ]
+    if safety_recall_eligible_thresholds:
+        safety_threshold_metrics = max(
+            safety_recall_eligible_thresholds,
+            key=lambda metrics: (
+                metrics["f1"],
+                metrics["precision"],
+                metrics["recall"],
+                metrics["threshold"],
+            ),
+        )
+    else:
+        safety_threshold_metrics = max(
+            threshold_metrics,
+            key=lambda metrics: (
+                metrics["recall"],
+                metrics["f1"],
+                metrics["precision"],
+                metrics["threshold"],
+            ),
+        )
 
     return {
         "default_metrics": {
@@ -508,16 +529,28 @@ def evaluate_model(
             "precision": float(precision_score(y_test, predictions, zero_division=0)),
             "recall": float(recall_score(y_test, predictions, zero_division=0)),
             "f1": float(f1_score(y_test, predictions, zero_division=0)),
-            "roc_auc": float(roc_auc_score(y_test, scores)),
+            "roc_auc": roc_auc,
             "average_precision": average_precision,
             "confusion_matrix": default_confusion_matrix,
         },
         "threshold_metrics": threshold_metrics,
-        "best_threshold": best_threshold_metrics["threshold"],
-        "best_threshold_metrics": {
-            **best_threshold_metrics,
+        "balanced_threshold": balanced_threshold_metrics["threshold"],
+        "balanced_threshold_metrics": {
+            **balanced_threshold_metrics,
             "average_precision": average_precision,
-            "roc_auc": float(roc_auc_score(y_test, scores)),
+            "roc_auc": roc_auc,
+        },
+        "safety_threshold": safety_threshold_metrics["threshold"],
+        "safety_threshold_metrics": {
+            **safety_threshold_metrics,
+            "average_precision": average_precision,
+            "roc_auc": roc_auc,
+        },
+        "best_threshold": balanced_threshold_metrics["threshold"],
+        "best_threshold_metrics": {
+            **balanced_threshold_metrics,
+            "average_precision": average_precision,
+            "roc_auc": roc_auc,
         },
     }
 
@@ -531,7 +564,16 @@ def train_and_select_model(
     test_size: float,
     split_mode: str,
     test_start_date: str | None,
-) -> tuple[Pipeline, str, dict[str, dict[str, Any]], dict[str, int], str, float]:
+) -> tuple[
+    Pipeline,
+    str,
+    dict[str, dict[str, Any]],
+    dict[str, int],
+    str,
+    float,
+    str,
+    float,
+]:
     if dataset.empty:
         raise ValueError("Training dataset is empty after balancing.")
 
@@ -615,39 +657,30 @@ def train_and_select_model(
         metrics_by_model[model_name] = evaluate_model(model, x_test, y_test)
         trained_models[model_name] = model
 
-    eligible_models = [
-        name
-        for name, metrics in metrics_by_model.items()
-        if metrics["best_threshold_metrics"]["recall"] >= 0.80
-    ]
-    if eligible_models:
-        selection_rule = (
-            "Selected by best_threshold_metrics among models with recall >= 0.80, "
-            "maximizing f1 and then precision."
-        )
-        best_model_name = max(
-            eligible_models,
-            key=lambda name: (
-                metrics_by_model[name]["best_threshold_metrics"]["f1"],
-                metrics_by_model[name]["best_threshold_metrics"]["precision"],
-                metrics_by_model[name]["best_threshold_metrics"]["recall"],
-            ),
-        )
-    else:
-        selection_rule = (
-            "No model reached recall >= 0.80; selected by maximum recall and then f1 "
-            "using best_threshold_metrics."
-        )
-        best_model_name = max(
-            metrics_by_model,
-            key=lambda name: (
-                metrics_by_model[name]["best_threshold_metrics"]["recall"],
-                metrics_by_model[name]["best_threshold_metrics"]["f1"],
-                metrics_by_model[name]["best_threshold_metrics"]["precision"],
-            ),
-        )
+    balanced_best_model_name = max(
+        metrics_by_model,
+        key=lambda name: (
+            metrics_by_model[name]["balanced_threshold_metrics"]["f1"],
+            metrics_by_model[name]["balanced_threshold_metrics"]["precision"],
+            metrics_by_model[name]["balanced_threshold_metrics"]["recall"],
+        ),
+    )
+    safety_best_model_name = max(
+        metrics_by_model,
+        key=lambda name: (
+            metrics_by_model[name]["safety_threshold_metrics"]["f1"],
+            metrics_by_model[name]["safety_threshold_metrics"]["precision"],
+            metrics_by_model[name]["safety_threshold_metrics"]["recall"],
+        ),
+    )
 
-    best_threshold = float(metrics_by_model[best_model_name]["best_threshold"])
+    selection_rule = (
+        "Saved pipeline uses balanced mode: model chosen by maximum balanced_threshold_metrics "
+        "f1, then precision, then recall. Safety mode is also computed and saved separately."
+    )
+    best_model_name = balanced_best_model_name
+    best_threshold = float(metrics_by_model[balanced_best_model_name]["balanced_threshold"])
+    safety_best_threshold = float(metrics_by_model[safety_best_model_name]["safety_threshold"])
 
     split_stats = {
         "train_rows": int(len(x_train)),
@@ -658,12 +691,14 @@ def train_and_select_model(
         "test_normal_rows": int((y_test == 0).sum()),
     }
     return (
-        trained_models[best_model_name],
-        best_model_name,
+        trained_models[balanced_best_model_name],
+        balanced_best_model_name,
         metrics_by_model,
         split_stats,
         selection_rule,
         best_threshold,
+        safety_best_model_name,
+        safety_best_threshold,
     )
 
 
@@ -676,6 +711,12 @@ def save_artifacts(
     selection_rule: str,
     split_mode: str,
     test_start_date: str | None,
+    balanced_model_name: str,
+    balanced_threshold: float,
+    balanced_threshold_metrics: dict[str, Any],
+    safety_model_name: str,
+    safety_threshold: float,
+    safety_threshold_metrics: dict[str, Any],
     report: dict[str, Any],
     *,
     model_path: Path,
@@ -690,6 +731,13 @@ def save_artifacts(
             "feature_columns": feature_columns,
             "target_column": target_column,
             "best_threshold": best_threshold,
+            "prediction_mode": "balanced",
+            "balanced_model_name": balanced_model_name,
+            "balanced_threshold": balanced_threshold,
+            "balanced_threshold_metrics": balanced_threshold_metrics,
+            "safety_model_name": safety_model_name,
+            "safety_threshold": safety_threshold,
+            "safety_threshold_metrics": safety_threshold_metrics,
             "selection_rule": selection_rule,
             "split_mode": split_mode,
             "test_start_date": test_start_date,
@@ -755,11 +803,13 @@ def main() -> None:
     try:
         (
             best_model,
-            best_model_name,
+            balanced_best_model_name,
             metrics_by_model,
             split_stats,
             selection_rule,
-            best_threshold,
+            balanced_best_threshold,
+            safety_best_model_name,
+            safety_best_threshold,
         ) = train_and_select_model(
             dataset,
             FEATURE_COLUMNS,
@@ -772,6 +822,13 @@ def main() -> None:
     except ValueError as error:
         print(error)
         raise SystemExit(1) from error
+
+    balanced_best_threshold_metrics = metrics_by_model[balanced_best_model_name][
+        "balanced_threshold_metrics"
+    ]
+    safety_best_threshold_metrics = metrics_by_model[safety_best_model_name][
+        "safety_threshold_metrics"
+    ]
 
     report = {
         "split_mode": split_mode,
@@ -792,21 +849,33 @@ def main() -> None:
         "test_normal_rows": split_stats["test_normal_rows"] if split_mode == "stratified" else stats["test_normal_rows"],
         "feature_columns": FEATURE_COLUMNS,
         "metrics_by_model": metrics_by_model,
-        "best_model_name": best_model_name,
-        "best_threshold": best_threshold,
-        "best_threshold_metrics": metrics_by_model[best_model_name]["best_threshold_metrics"],
+        "best_model_name": balanced_best_model_name,
+        "best_threshold": balanced_best_threshold,
+        "best_threshold_metrics": balanced_best_threshold_metrics,
+        "balanced_best_model_name": balanced_best_model_name,
+        "balanced_best_threshold": balanced_best_threshold,
+        "balanced_best_threshold_metrics": balanced_best_threshold_metrics,
+        "safety_best_model_name": safety_best_model_name,
+        "safety_best_threshold": safety_best_threshold,
+        "safety_best_threshold_metrics": safety_best_threshold_metrics,
         "selection_rule": selection_rule,
     }
 
     save_artifacts(
         best_model,
-        best_model_name,
+        balanced_best_model_name,
         FEATURE_COLUMNS,
         target_column,
-        best_threshold,
+        balanced_best_threshold,
         selection_rule,
         split_mode,
         test_start_date,
+        balanced_best_model_name,
+        balanced_best_threshold,
+        balanced_best_threshold_metrics,
+        safety_best_model_name,
+        safety_best_threshold,
+        safety_best_threshold_metrics,
         report,
         model_path=model_path,
         report_path=report_path,
@@ -845,21 +914,33 @@ def main() -> None:
             f"average_precision={metrics['default_metrics']['average_precision']:.6f}, "
             f"confusion_matrix={metrics['default_metrics']['confusion_matrix']}"
         )
-        print(f"  best_threshold={metrics['best_threshold']:.2f}")
+        print(f"  balanced_threshold={metrics['balanced_threshold']:.2f}")
         print(
-            "  best_threshold_metrics: "
-            f"accuracy={metrics['best_threshold_metrics']['accuracy']:.6f}, "
-            f"precision={metrics['best_threshold_metrics']['precision']:.6f}, "
-            f"recall={metrics['best_threshold_metrics']['recall']:.6f}, "
-            f"f1={metrics['best_threshold_metrics']['f1']:.6f}, "
-            f"roc_auc={metrics['best_threshold_metrics']['roc_auc']:.6f}, "
-            f"average_precision={metrics['best_threshold_metrics']['average_precision']:.6f}, "
-            f"confusion_matrix={metrics['best_threshold_metrics']['confusion_matrix']}"
+            "  balanced_threshold_metrics: "
+            f"accuracy={metrics['balanced_threshold_metrics']['accuracy']:.6f}, "
+            f"precision={metrics['balanced_threshold_metrics']['precision']:.6f}, "
+            f"recall={metrics['balanced_threshold_metrics']['recall']:.6f}, "
+            f"f1={metrics['balanced_threshold_metrics']['f1']:.6f}, "
+            f"roc_auc={metrics['balanced_threshold_metrics']['roc_auc']:.6f}, "
+            f"average_precision={metrics['balanced_threshold_metrics']['average_precision']:.6f}, "
+            f"confusion_matrix={metrics['balanced_threshold_metrics']['confusion_matrix']}"
+        )
+        print(f"  safety_threshold={metrics['safety_threshold']:.2f}")
+        print(
+            "  safety_threshold_metrics: "
+            f"accuracy={metrics['safety_threshold_metrics']['accuracy']:.6f}, "
+            f"precision={metrics['safety_threshold_metrics']['precision']:.6f}, "
+            f"recall={metrics['safety_threshold_metrics']['recall']:.6f}, "
+            f"f1={metrics['safety_threshold_metrics']['f1']:.6f}, "
+            f"roc_auc={metrics['safety_threshold_metrics']['roc_auc']:.6f}, "
+            f"average_precision={metrics['safety_threshold_metrics']['average_precision']:.6f}, "
+            f"confusion_matrix={metrics['safety_threshold_metrics']['confusion_matrix']}"
         )
 
-    print(f"Best model: {best_model_name}")
-    print(f"Best threshold: {best_threshold:.2f}")
-    print(f"Selection rule: {selection_rule}")
+    print(f"Balanced best model: {balanced_best_model_name}")
+    print(f"Balanced best threshold: {balanced_best_threshold:.2f}")
+    print(f"Safety best model: {safety_best_model_name}")
+    print(f"Safety best threshold: {safety_best_threshold:.2f}")
     print(f"Saved model: {model_path}")
     print(f"Saved report: {report_path}")
 
