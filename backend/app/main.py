@@ -133,6 +133,147 @@ def _measurement_to_dashboard_history_item(
     }
 
 
+def _get_dashboard_measurements(
+    device_id: int,
+    limit: int,
+) -> list[Measurement]:
+    with SessionLocal() as db:
+        measurements = (
+            db.query(Measurement)
+            .filter(Measurement.device_id == device_id)
+            .order_by(Measurement.recorded_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+    return list(reversed(measurements))
+
+
+def _round_chart_value(value: object) -> float | int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return round(value, 2)
+
+    numeric_value = _to_float(value)
+    if numeric_value is None:
+        return None
+    return round(numeric_value, 2)
+
+
+def _build_chart_points(
+    measurements: list[Measurement],
+    field_name: str,
+) -> list[dict[str, object]]:
+    points: list[dict[str, object]] = []
+
+    for measurement in measurements:
+        points.append(
+            {
+                "time": (
+                    measurement.recorded_at.isoformat()
+                    if measurement.recorded_at is not None
+                    else None
+                ),
+                "value": _round_chart_value(getattr(measurement, field_name, None)),
+            }
+        )
+
+    return points
+
+
+def _build_chart_series(
+    measurements: list[Measurement],
+    series_config: list[dict[str, str]],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "key": item["key"],
+            "name": item["name"],
+            "points": _build_chart_points(measurements, item["key"]),
+        }
+        for item in series_config
+    ]
+
+
+def _build_dashboard_charts_payload(
+    measurements: list[Measurement],
+    device_id: int,
+    limit: int,
+) -> dict[str, object]:
+    charts_config = {
+        "usage": {
+            "title": "Нагрузка компонентов",
+            "unit": "%",
+            "type": "line",
+            "series": [
+                {"key": "cpu_usage", "name": "CPU"},
+                {"key": "gpu_usage", "name": "GPU"},
+                {"key": "ram_usage", "name": "RAM"},
+                {"key": "disk_usage", "name": "Disk"},
+            ],
+        },
+        "temperatures": {
+            "title": "Температуры компонентов",
+            "unit": "°C",
+            "type": "line",
+            "series": [
+                {"key": "cpu_temperature", "name": "CPU"},
+                {"key": "gpu_temperature", "name": "GPU"},
+                {"key": "ram_temperature", "name": "RAM"},
+                {"key": "disk_temperature", "name": "Disk"},
+            ],
+        },
+        "power": {
+            "title": "Потребление мощности",
+            "unit": "W",
+            "type": "line",
+            "series": [
+                {"key": "cpu_power", "name": "CPU"},
+                {"key": "gpu_power", "name": "GPU"},
+            ],
+        },
+        "cooling": {
+            "title": "Скорость вентиляторов",
+            "unit": "RPM",
+            "type": "line",
+            "series": [
+                {"key": "system_fan_rpm", "name": "System Fan"},
+            ],
+        },
+        "disk_health": {
+            "title": "Состояние накопителя",
+            "unit": "",
+            "type": "line",
+            "series": [
+                {"key": "disk_life", "name": "Disk Life"},
+                {"key": "disk_power_on_hours", "name": "Power On Hours"},
+            ],
+        },
+    }
+
+    charts: dict[str, object] = {}
+    for chart_key, chart_config in charts_config.items():
+        charts[chart_key] = {
+            "title": chart_config["title"],
+            "unit": chart_config["unit"],
+            "type": chart_config["type"],
+            "series": _build_chart_series(measurements, chart_config["series"]),
+        }
+
+    return {
+        "device_id": device_id,
+        "limit": limit,
+        "count": len(measurements),
+        "updated_at": f"{datetime.utcnow().isoformat()}Z",
+        "charts": charts,
+    }
+
+
 def _safe_error_text(error: Exception) -> str:
     error_text = str(error).strip()
     return error_text or error.__class__.__name__
@@ -1147,16 +1288,7 @@ def get_dashboard_history(
 ) -> dict[str, object]:
     resolved_device_id = device_id if device_id is not None else 1
 
-    with SessionLocal() as db:
-        measurements = (
-            db.query(Measurement)
-            .filter(Measurement.device_id == resolved_device_id)
-            .order_by(Measurement.recorded_at.desc())
-            .limit(limit)
-            .all()
-        )
-
-    ordered_measurements = list(reversed(measurements))
+    ordered_measurements = _get_dashboard_measurements(resolved_device_id, limit)
     items = [
         _measurement_to_dashboard_history_item(measurement)
         for measurement in ordered_measurements
@@ -1180,6 +1312,20 @@ def get_dashboard_history(
             "disk": ["disk_life", "disk_power_on_hours"],
         },
     }
+
+
+@app.get("/dashboard/charts")
+def get_dashboard_charts(
+    limit: int = Query(default=120, ge=1, le=1000),
+    device_id: int | None = Query(default=None),
+) -> dict[str, object]:
+    resolved_device_id = device_id if device_id is not None else 1
+    measurements = _get_dashboard_measurements(resolved_device_id, limit)
+    return _build_dashboard_charts_payload(
+        measurements,
+        resolved_device_id,
+        limit,
+    )
 
 
 @app.post("/ml/smart/predict")
