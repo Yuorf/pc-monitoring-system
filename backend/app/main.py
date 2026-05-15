@@ -18,6 +18,7 @@ from app.models.device import Device
 from app.models.measurement import Measurement
 from app.services.external_tools_service import (
     LHM_PROCESS_NAME,
+    check_external_tools_health,
     start_lhm_if_needed,
 )
 from app.services.hardware_sensors import collect_hardware_sensors, extract_key_metrics
@@ -728,23 +729,36 @@ def _copy_lhm_status_payload() -> dict[str, object]:
     }
 
 
-def _build_compact_external_tools_payload() -> dict[str, object]:
-    lhm_status = _copy_lhm_status_payload()
-    compact_payload = {
-        "status": lhm_status.get("status", "unknown"),
-        "process_name": lhm_status.get("process_name", LHM_PROCESS_NAME),
-    }
+def _merge_lhm_health_payload(runtime_payload: object) -> dict[str, object]:
+    merged_payload = _safe_dict(runtime_payload)
+    startup_payload = _copy_lhm_status_payload()
 
-    exe_path = lhm_status.get("exe_path")
-    if isinstance(exe_path, str) and exe_path:
-        compact_payload["exe_path"] = exe_path
+    for field_name in (
+        "status",
+        "process_name",
+        "exe_path",
+        "checked_paths",
+        "error",
+    ):
+        field_value = startup_payload.get(field_name)
+        if field_value in (None, "", []):
+            continue
+        merged_payload[field_name] = field_value
 
-    error = lhm_status.get("error")
-    if isinstance(error, str) and error:
-        compact_payload["error"] = error
+    if "process_name" not in merged_payload:
+        merged_payload["process_name"] = LHM_PROCESS_NAME
 
+    return merged_payload
+
+
+def _build_external_tools_payload() -> dict[str, object]:
+    runtime_payload = _safe_dict(check_external_tools_health())
+    smartctl_payload = runtime_payload.get("smartctl")
     return {
-        "libre_hardware_monitor": compact_payload,
+        "libre_hardware_monitor": _merge_lhm_health_payload(
+            runtime_payload.get("libre_hardware_monitor")
+        ),
+        "smartctl": _safe_dict(smartctl_payload),
     }
 
 
@@ -1181,13 +1195,17 @@ def _check_smart_health() -> dict[str, object]:
 
 
 def _build_health_check_payload() -> dict[str, object]:
+    external_tools_payload = _build_external_tools_payload()
     checks = {
         "backend": {"status": "ok"},
         "database": _check_database_health(),
         "ml_model": _check_ml_model_health(),
         "sensors": _check_sensors_health(),
         "smart": _check_smart_health(),
-        "libre_hardware_monitor": _copy_lhm_status_payload(),
+        "external_tools": external_tools_payload,
+        "libre_hardware_monitor": _safe_dict(
+            external_tools_payload.get("libre_hardware_monitor")
+        ),
     }
 
     database_status = checks["database"].get("status")
@@ -1382,7 +1400,7 @@ def get_system_status() -> dict[str, object]:
         "metrics": metrics_payload,
         "sensors": sensors_payload,
         "smart": smart_payload,
-        "external_tools": _build_compact_external_tools_payload(),
+        "external_tools": _build_external_tools_payload(),
         "warnings": warnings_payload,
         "recommendations": recommendations_payload,
         "ml_prediction": ml_prediction_payload,

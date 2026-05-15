@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -7,6 +8,7 @@ from app.core.config import settings
 
 
 LHM_PROCESS_NAME = "LibreHardwareMonitor.exe"
+SMARTCTL_EXE_NAME = "smartctl.exe"
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -66,6 +68,29 @@ def get_lhm_candidate_paths() -> list[Path]:
 
 def find_lhm_executable() -> Path | None:
     for candidate_path in get_lhm_candidate_paths():
+        if candidate_path.is_file():
+            return candidate_path
+    return None
+
+
+def get_smartctl_candidate_paths() -> list[Path]:
+    candidates = [
+        BACKEND_DIR / "tools" / "smartmontools" / "bin" / SMARTCTL_EXE_NAME,
+        BACKEND_DIR / "tools" / "smartmontools" / SMARTCTL_EXE_NAME,
+        PROJECT_ROOT / "tools" / "smartmontools" / "bin" / SMARTCTL_EXE_NAME,
+        PROJECT_ROOT / "tools" / "smartmontools" / SMARTCTL_EXE_NAME,
+    ]
+
+    for executable_name in ("smartctl", SMARTCTL_EXE_NAME):
+        executable_path = shutil.which(executable_name)
+        if executable_path:
+            candidates.append(Path(executable_path))
+
+    return _deduplicate_paths(candidates)
+
+
+def find_smartctl_executable() -> Path | None:
+    for candidate_path in get_smartctl_candidate_paths():
         if candidate_path.is_file():
             return candidate_path
     return None
@@ -160,3 +185,49 @@ def start_lhm_if_needed() -> dict[str, object]:
             "exe_path": str(executable_path),
             "error": _error_text(error),
         }
+
+
+def check_external_tools_health() -> dict[str, object]:
+    lhm_executable = find_lhm_executable()
+    lhm_payload: dict[str, object] = {
+        "process_name": LHM_PROCESS_NAME,
+    }
+    if not settings.LIBRE_HARDWARE_MONITOR_ENABLED:
+        lhm_payload["status"] = "disabled"
+    elif is_process_running(LHM_PROCESS_NAME):
+        lhm_payload["status"] = "already_running"
+    elif lhm_executable is not None:
+        lhm_payload["status"] = "available"
+    else:
+        lhm_payload["status"] = "not_found"
+        lhm_payload["checked_paths"] = [
+            str(path) for path in get_lhm_candidate_paths()
+        ]
+
+    if lhm_executable is not None:
+        lhm_payload["exe_path"] = str(lhm_executable)
+
+    try:
+        smartctl_executable = find_smartctl_executable()
+        if smartctl_executable is not None:
+            smartctl_payload: dict[str, object] = {
+                "status": "ok",
+                "exe_path": str(smartctl_executable),
+            }
+        else:
+            smartctl_payload = {
+                "status": "not_found",
+                "checked_paths": [
+                    str(path) for path in get_smartctl_candidate_paths()
+                ],
+            }
+    except Exception as error:
+        smartctl_payload = {
+            "status": "error",
+            "error": _error_text(error),
+        }
+
+    return {
+        "libre_hardware_monitor": lhm_payload,
+        "smartctl": smartctl_payload,
+    }
