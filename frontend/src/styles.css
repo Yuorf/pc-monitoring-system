@@ -309,6 +309,7 @@ textarea {
 }
 
 .spotlight-panel,
+.drives-panel,
 .tools-panel,
 .chart-panel {
   padding: 24px;
@@ -335,6 +336,45 @@ textarea {
   margin-top: 8px;
   font-size: clamp(1.8rem, 4vw, 2.6rem);
   line-height: 1;
+}
+
+.ml-note {
+  margin-top: 18px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.46);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.ml-note strong {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.ml-note p {
+  margin: 0;
+  color: #cbd5e1;
+}
+
+.drives-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.drive-card {
+  padding: 20px;
+  border-radius: 24px;
+  background: rgba(15, 23, 42, 0.62);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.drive-details-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 18px;
 }
 
 .tool-status-grid {
@@ -421,7 +461,8 @@ textarea {
 
 @media (max-width: 1200px) {
   .cards-grid,
-  .tool-status-grid {
+  .tool-status-grid,
+  .drives-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -443,7 +484,8 @@ textarea {
 
   .spotlight-grid,
   .device-grid,
-  .metric-card-values {
+  .metric-card-values,
+  .drive-details-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -454,11 +496,13 @@ textarea {
   }
 
   .cards-grid,
-  .tool-status-grid {
+  .tool-status-grid,
+  .drives-grid {
     grid-template-columns: 1fr;
   }
 
   .spotlight-panel,
+  .drives-panel,
   .tools-panel,
   .chart-panel,
   .metric-card {
