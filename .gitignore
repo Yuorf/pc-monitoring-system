@@ -21,3 +21,5 @@ backend/data/*.sqlite
 backend/data/*.sqlite3
 backend/tools/LibreHardwareMonitor/
 tools/LibreHardwareMonitor/
+frontend/node_modules/
+frontend/dist/
