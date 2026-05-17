@@ -20,10 +20,6 @@ body {
   background: transparent;
 }
 
-code {
-  font-family: "Consolas", "SFMono-Regular", monospace;
-}
-
 button,
 input,
 select,
@@ -63,7 +59,9 @@ textarea {
   background: rgba(248, 113, 113, 0.16);
 }
 
-.panel {
+.panel,
+.component-category-card,
+.diagnostic-card {
   background: rgba(15, 23, 42, 0.78);
   border: 1px solid rgba(148, 163, 184, 0.14);
   border-radius: 24px;
@@ -73,21 +71,16 @@ textarea {
 
 .hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(260px, 0.9fr);
+  grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.85fr);
   gap: 24px;
   padding: 28px;
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
 
 .hero-copy h1 {
-  margin: 10px 0 14px;
+  margin: 10px 0 18px;
   font-size: clamp(2rem, 4vw, 3.25rem);
   line-height: 1.05;
-}
-
-.hero-text {
-  margin: 0 0 22px;
-  color: #94a3b8;
 }
 
 .eyebrow {
@@ -98,7 +91,11 @@ textarea {
   color: #7dd3fc;
 }
 
-.device-grid {
+.hero-meta-grid,
+.configuration-grid,
+.summary-grid,
+.component-info-grid,
+.diagnostics-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
@@ -156,27 +153,83 @@ textarea {
   line-height: 1;
 }
 
-.refresh-button {
+.hero-status-reason {
+  margin: 0;
+  color: #cbd5e1;
+}
+
+.refresh-button,
+.secondary-action-button {
   display: inline-flex;
   justify-content: center;
   align-items: center;
   padding: 14px 18px;
   border: none;
   border-radius: 16px;
-  background: linear-gradient(135deg, #38bdf8, #22c55e);
-  color: #04111f;
   font-weight: 700;
   cursor: pointer;
-  transition: transform 120ms ease, opacity 120ms ease;
+  transition: transform 120ms ease, opacity 120ms ease, border-color 120ms ease;
 }
 
-.refresh-button:hover:enabled {
+.refresh-button {
+  background: linear-gradient(135deg, #38bdf8, #22c55e);
+  color: #04111f;
+}
+
+.secondary-action-button {
+  background: rgba(15, 23, 42, 0.55);
+  color: #e2e8f0;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.refresh-button:hover:enabled,
+.secondary-action-button:hover {
   transform: translateY(-1px);
 }
 
 .refresh-button:disabled {
   opacity: 0.72;
   cursor: wait;
+}
+
+.section-nav {
+  padding: 14px;
+  margin-bottom: 20px;
+}
+
+.section-nav-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.section-tab {
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(15, 23, 42, 0.48);
+  color: #cbd5e1;
+  padding: 12px 16px;
+  border-radius: 14px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.section-tab:hover {
+  transform: translateY(-1px);
+  border-color: rgba(125, 211, 252, 0.32);
+}
+
+.section-tab-active {
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.24), rgba(34, 197, 94, 0.18));
+  color: #f8fafc;
+  border-color: rgba(125, 211, 252, 0.42);
+}
+
+.section-content,
+.components-stack,
+.diagnostics-stack,
+.charts-stack {
+  display: grid;
+  gap: 22px;
 }
 
 .status-badge {
@@ -246,37 +299,70 @@ textarea {
   line-height: 1.6;
 }
 
-.cards-grid,
+.overview-grid,
+.component-category-grid,
+.component-charts-grid,
 .charts-grid,
-.lists-grid {
+.lists-grid,
+.diagnostic-card-grid,
+.diagnostics-panels-grid {
   display: grid;
   gap: 18px;
-  margin-bottom: 22px;
 }
 
-.cards-grid {
+.overview-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.lists-grid {
+.component-category-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.component-charts-grid,
+.charts-grid,
+.lists-grid,
+.diagnostics-panels-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.diagnostic-card-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.metric-card,
+.configuration-panel,
+.summary-panel,
+.component-detail-panel,
+.spotlight-panel,
+.drives-panel,
+.charts-intro-panel,
+.chart-panel,
+.diagnostics-toggle-panel,
+.diagnostics-source-panel {
+  padding: 24px;
+}
+
 .metric-card {
-  padding: 20px;
   border-radius: 24px;
   background: rgba(15, 23, 42, 0.8);
   border: 1px solid rgba(148, 163, 184, 0.12);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
 }
 
-.metric-card-critical {
+.metric-card-critical,
+.drive-card-problem {
   border-color: rgba(248, 113, 113, 0.42);
   box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.08), 0 20px 50px rgba(127, 29, 29, 0.2);
 }
 
+.metric-card-warning {
+  border-color: rgba(245, 158, 11, 0.34);
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.08), 0 20px 50px rgba(120, 53, 15, 0.12);
+}
+
 .metric-card-header,
-.panel-header {
+.panel-header,
+.component-category-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -284,7 +370,8 @@ textarea {
 }
 
 .metric-card-header h3,
-.panel-header h3 {
+.panel-header h3,
+.component-category-header h3 {
   margin: 8px 0 0;
   font-size: 1.3rem;
 }
@@ -308,11 +395,79 @@ textarea {
   gap: 10px;
 }
 
-.spotlight-panel,
-.drives-panel,
-.tools-panel,
-.chart-panel {
-  padding: 24px;
+.overview-drive-details {
+  margin-top: 18px;
+}
+
+.summary-grid,
+.component-info-grid,
+.configuration-grid {
+  margin-top: 18px;
+}
+
+.score-details-panel,
+.component-drive-list {
+  margin-top: 18px;
+}
+
+.score-details-list,
+.component-drive-list {
+  display: grid;
+  gap: 12px;
+}
+
+.score-detail-item,
+.component-drive-item {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.56);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.component-drive-item-problem {
+  border-color: rgba(248, 113, 113, 0.28);
+}
+
+.score-detail-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.score-detail-item p,
+.component-drive-reason {
+  margin: 8px 0 0;
+  color: #cbd5e1;
+}
+
+.component-category-card,
+.diagnostic-card {
+  padding: 20px;
+  text-align: left;
+  color: inherit;
+}
+
+.component-category-card {
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease;
+}
+
+.component-category-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(125, 211, 252, 0.32);
+}
+
+.component-category-card-active {
+  border-color: rgba(125, 211, 252, 0.42);
+  box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.08), 0 20px 50px rgba(2, 132, 199, 0.14);
+}
+
+.component-category-summary,
+.diagnostic-detail,
+.charts-intro-text {
+  margin: 16px 0 0;
+  color: #cbd5e1;
 }
 
 .spotlight-grid {
@@ -338,7 +493,8 @@ textarea {
   line-height: 1;
 }
 
-.ml-note {
+.ml-note,
+.drive-note {
   margin-top: 18px;
   padding: 16px 18px;
   border-radius: 18px;
@@ -346,12 +502,19 @@ textarea {
   border: 1px solid rgba(148, 163, 184, 0.14);
 }
 
-.ml-note strong {
+.drive-note {
+  background: rgba(127, 29, 29, 0.18);
+  border-color: rgba(248, 113, 113, 0.2);
+}
+
+.ml-note strong,
+.drive-note strong {
   display: block;
   margin-bottom: 8px;
 }
 
-.ml-note p {
+.ml-note p,
+.drive-note p {
   margin: 0;
   color: #cbd5e1;
 }
@@ -370,37 +533,16 @@ textarea {
   border: 1px solid rgba(148, 163, 184, 0.12);
 }
 
-.drive-details-grid {
+.drive-details-grid,
+.diagnostics-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   margin-top: 18px;
 }
 
-.tool-status-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-  margin: 18px 0;
-}
-
-.health-chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.health-chip {
-  display: inline-flex;
-  gap: 10px;
-  align-items: center;
-  padding: 10px 14px;
-  border-radius: 999px;
-  background: rgba(15, 23, 42, 0.56);
-  border: 1px solid rgba(148, 163, 184, 0.14);
-}
-
-.health-chip span {
+.drive-empty-note {
+  margin: 16px 0 0;
   color: #94a3b8;
 }
 
@@ -408,10 +550,6 @@ textarea {
 .panel-count {
   color: #94a3b8;
   font-size: 0.9rem;
-}
-
-.charts-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .chart-canvas {
@@ -459,10 +597,11 @@ textarea {
   color: #94a3b8;
 }
 
-@media (max-width: 1200px) {
-  .cards-grid,
-  .tool-status-grid,
-  .drives-grid {
+@media (max-width: 1280px) {
+  .overview-grid,
+  .component-category-grid,
+  .drives-grid,
+  .diagnostic-card-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -471,10 +610,12 @@ textarea {
   }
 }
 
-@media (max-width: 900px) {
+@media (max-width: 960px) {
   .hero,
+  .component-charts-grid,
   .charts-grid,
-  .lists-grid {
+  .lists-grid,
+  .diagnostics-panels-grid {
     grid-template-columns: 1fr;
   }
 
@@ -482,10 +623,14 @@ textarea {
     padding: 22px;
   }
 
+  .hero-meta-grid,
+  .summary-grid,
+  .component-info-grid,
+  .configuration-grid,
   .spotlight-grid,
-  .device-grid,
-  .metric-card-values,
-  .drive-details-grid {
+  .drive-details-grid,
+  .diagnostics-grid,
+  .metric-card-values {
     grid-template-columns: 1fr;
   }
 }
@@ -495,17 +640,31 @@ textarea {
     padding: 18px 12px 34px;
   }
 
-  .cards-grid,
-  .tool-status-grid,
-  .drives-grid {
+  .overview-grid,
+  .component-category-grid,
+  .drives-grid,
+  .diagnostic-card-grid {
     grid-template-columns: 1fr;
   }
 
+  .metric-card,
+  .configuration-panel,
+  .summary-panel,
+  .component-detail-panel,
   .spotlight-panel,
   .drives-panel,
-  .tools-panel,
+  .charts-intro-panel,
   .chart-panel,
-  .metric-card {
+  .diagnostics-toggle-panel,
+  .diagnostics-source-panel,
+  .drive-card,
+  .component-category-card,
+  .diagnostic-card {
     padding: 18px;
+  }
+
+  .section-tab {
+    width: 100%;
+    justify-content: center;
   }
 }

@@ -1,7 +1,9 @@
 import json
 import platform
+import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 import psutil
 
@@ -35,6 +37,42 @@ def _to_string(value: object) -> str | None:
         return None
     value_str = str(value).strip()
     return value_str or None
+
+
+def _format_cim_datetime(value: object) -> str | None:
+    text = _to_string(value)
+    if text is None:
+        return None
+
+    milliseconds_match = re.search(r"/Date\((?P<milliseconds>-?\d+)", text)
+    if milliseconds_match:
+        try:
+            milliseconds = int(milliseconds_match.group("milliseconds"))
+            return (
+                datetime.fromtimestamp(milliseconds / 1000, tz=timezone.utc)
+                .date()
+                .isoformat()
+            )
+        except (TypeError, ValueError, OSError):
+            return text
+
+    for date_format in (
+        "%Y%m%d%H%M%S.%f%z",
+        "%Y%m%d%H%M%S.%f",
+        "%Y-%m-%dT%H:%M:%S.%f%z",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%d",
+    ):
+        try:
+            parsed = datetime.strptime(text, date_format)
+            return parsed.date().isoformat()
+        except ValueError:
+            continue
+
+    if len(text) >= 8 and text[:8].isdigit():
+        return f"{text[:4]}-{text[4:6]}-{text[6:8]}"
+
+    return text
 
 
 def _normalize_records(data: object) -> list[dict[str, object]]:
@@ -85,9 +123,12 @@ def _collect_cpu_info() -> dict[str, object]:
         "manufacturer": None,
         "physical_cores": None,
         "logical_cores": None,
+        "logical_processors": None,
+        "threads": None,
         "current_frequency_mhz": None,
         "min_frequency_mhz": None,
         "max_frequency_mhz": None,
+        "max_clock_mhz": None,
         "cpu_usage": None,
         "per_core_usage": None,
     }
@@ -99,6 +140,8 @@ def _collect_cpu_info() -> dict[str, object]:
 
     try:
         cpu_info["logical_cores"] = psutil.cpu_count(logical=True)
+        cpu_info["logical_processors"] = cpu_info["logical_cores"]
+        cpu_info["threads"] = cpu_info["logical_cores"]
     except Exception:
         pass
 
@@ -108,6 +151,7 @@ def _collect_cpu_info() -> dict[str, object]:
             cpu_info["current_frequency_mhz"] = _to_float(round(cpu_freq.current, 2))
             cpu_info["min_frequency_mhz"] = _to_float(round(cpu_freq.min, 2))
             cpu_info["max_frequency_mhz"] = _to_float(round(cpu_freq.max, 2))
+            cpu_info["max_clock_mhz"] = cpu_info["max_frequency_mhz"]
     except Exception:
         pass
 
@@ -124,13 +168,31 @@ def _collect_cpu_info() -> dict[str, object]:
     cpu_records = _normalize_records(
         _run_powershell_json(
             "Get-CimInstance Win32_Processor | "
-            "Select-Object -First 1 Name, Manufacturer | "
+            "Select-Object -First 1 Name, Manufacturer, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed | "
             "ConvertTo-Json -Compress"
         )
     )
     if cpu_records:
         cpu_info["name"] = _to_string(cpu_records[0].get("Name"))
         cpu_info["manufacturer"] = _to_string(cpu_records[0].get("Manufacturer"))
+        if cpu_info["physical_cores"] is None:
+            cpu_info["physical_cores"] = _to_int(cpu_records[0].get("NumberOfCores"))
+        logical_processors = _to_int(cpu_records[0].get("NumberOfLogicalProcessors"))
+        if cpu_info["logical_cores"] is None:
+            cpu_info["logical_cores"] = logical_processors
+        if cpu_info["logical_processors"] is None:
+            cpu_info["logical_processors"] = logical_processors
+        if cpu_info["threads"] is None:
+            cpu_info["threads"] = logical_processors
+
+        max_clock_mhz = _to_float(cpu_records[0].get("MaxClockSpeed"))
+        if max_clock_mhz is not None:
+            cpu_info["max_clock_mhz"] = max_clock_mhz
+            if (
+                cpu_info["max_frequency_mhz"] is None
+                or cpu_info["max_frequency_mhz"] <= 0
+            ):
+                cpu_info["max_frequency_mhz"] = max_clock_mhz
 
     return cpu_info
 
@@ -141,6 +203,8 @@ def _collect_ram_info() -> dict[str, object]:
         "used_gb": None,
         "available_gb": None,
         "percent": None,
+        "modules_count": 0,
+        "modules": [],
         "memory_modules": [],
     }
 
@@ -160,7 +224,7 @@ def _collect_ram_info() -> dict[str, object]:
             "ConvertTo-Json -Compress"
         )
     )
-    ram_info["memory_modules"] = [
+    modules = [
         {
             "capacity_gb": _round_gb(_to_int(module.get("Capacity"))),
             "manufacturer": _to_string(module.get("Manufacturer")),
@@ -173,6 +237,9 @@ def _collect_ram_info() -> dict[str, object]:
         }
         for module in module_records
     ]
+    ram_info["memory_modules"] = modules
+    ram_info["modules"] = modules
+    ram_info["modules_count"] = len(modules)
 
     return ram_info
 
@@ -279,6 +346,14 @@ def _collect_gpu_counter_usage() -> float | None:
 
 
 def _collect_gpu_info() -> tuple[dict[str, object] | None, list[dict[str, object]]]:
+    wmi_gpu_records = _normalize_records(
+        _run_powershell_json(
+            "Get-CimInstance Win32_VideoController | "
+            "Select-Object Name, AdapterRAM, DriverVersion, VideoProcessor | "
+            "ConvertTo-Json -Compress"
+        )
+    )
+
     nvidia_output = _run_command(
         [
             "nvidia-smi",
@@ -292,13 +367,17 @@ def _collect_gpu_info() -> tuple[dict[str, object] | None, list[dict[str, object
             if not line.strip():
                 continue
             parts = [part.strip() for part in line.split(",")]
+            adapter_ram_gb = None
+            memory_total_mb = _to_int(parts[4] if len(parts) > 4 else None)
+            if memory_total_mb is not None:
+                adapter_ram_gb = round(memory_total_mb / 1024, 2)
             gpu_devices.append(
                 {
                     "name": _to_string(parts[0] if len(parts) > 0 else None),
                     "driver_version": _to_string(parts[1] if len(parts) > 1 else None),
                     "usage_percent": _to_float(parts[2] if len(parts) > 2 else None),
                     "memory_used_mb": _to_int(parts[3] if len(parts) > 3 else None),
-                    "memory_total_mb": _to_int(parts[4] if len(parts) > 4 else None),
+                    "memory_total_mb": memory_total_mb,
                     "temperature_celsius": _to_float(
                         parts[5] if len(parts) > 5 else None
                     ),
@@ -313,26 +392,33 @@ def _collect_gpu_info() -> tuple[dict[str, object] | None, list[dict[str, object
                     "memory_clock_mhz": _to_float(
                         parts[10] if len(parts) > 10 else None
                     ),
+                    "adapter_ram_gb": adapter_ram_gb,
                     "video_processor": None,
                 }
             )
 
         if gpu_devices:
+            if wmi_gpu_records:
+                wmi_first = wmi_gpu_records[0]
+                if gpu_devices[0].get("adapter_ram_gb") is None:
+                    adapter_ram_bytes = _to_int(wmi_first.get("AdapterRAM"))
+                    if adapter_ram_bytes is not None:
+                        gpu_devices[0]["adapter_ram_gb"] = round(
+                            adapter_ram_bytes / (1024**3), 2
+                        )
+                if gpu_devices[0].get("driver_version") is None:
+                    gpu_devices[0]["driver_version"] = _to_string(
+                        wmi_first.get("DriverVersion")
+                    )
             return gpu_devices[0], gpu_devices
 
-    gpu_records = _normalize_records(
-        _run_powershell_json(
-            "Get-CimInstance Win32_VideoController | "
-            "Select-Object Name, AdapterRAM, DriverVersion, VideoProcessor | "
-            "ConvertTo-Json -Compress"
-        )
-    )
-    if not gpu_records:
+    if not wmi_gpu_records:
         return None, []
 
     gpu_counter_usage = _collect_gpu_counter_usage()
     gpu_devices = []
-    for index, gpu in enumerate(gpu_records):
+    for index, gpu in enumerate(wmi_gpu_records):
+        adapter_ram_bytes = _to_int(gpu.get("AdapterRAM"))
         gpu_devices.append(
             {
                 "name": _to_string(gpu.get("Name")),
@@ -340,8 +426,8 @@ def _collect_gpu_info() -> tuple[dict[str, object] | None, list[dict[str, object
                 "usage_percent": gpu_counter_usage if index == 0 else None,
                 "memory_used_mb": None,
                 "memory_total_mb": _to_int(
-                    round(_to_int(gpu.get("AdapterRAM")) / (1024**2), 2)
-                    if _to_int(gpu.get("AdapterRAM")) is not None
+                    round(adapter_ram_bytes / (1024**2), 2)
+                    if adapter_ram_bytes is not None
                     else None
                 ),
                 "temperature_celsius": None,
@@ -350,6 +436,11 @@ def _collect_gpu_info() -> tuple[dict[str, object] | None, list[dict[str, object
                 "fan_speed_percent": None,
                 "graphics_clock_mhz": None,
                 "memory_clock_mhz": None,
+                "adapter_ram_gb": (
+                    round(adapter_ram_bytes / (1024**3), 2)
+                    if adapter_ram_bytes is not None
+                    else None
+                ),
                 "video_processor": _to_string(gpu.get("VideoProcessor")),
             }
         )
@@ -360,6 +451,7 @@ def _collect_gpu_info() -> tuple[dict[str, object] | None, list[dict[str, object
 def _collect_motherboard_info() -> dict[str, str | None]:
     motherboard_info = {
         "manufacturer": None,
+        "model": None,
         "product": None,
         "version": None,
         "bios_manufacturer": None,
@@ -379,6 +471,7 @@ def _collect_motherboard_info() -> dict[str, str | None]:
             board_records[0].get("Manufacturer")
         )
         motherboard_info["product"] = _to_string(board_records[0].get("Product"))
+        motherboard_info["model"] = motherboard_info["product"]
         motherboard_info["version"] = _to_string(board_records[0].get("Version"))
 
     bios_records = _normalize_records(
@@ -395,9 +488,60 @@ def _collect_motherboard_info() -> dict[str, str | None]:
         motherboard_info["bios_version"] = _to_string(
             bios_records[0].get("SMBIOSBIOSVersion")
         )
-        motherboard_info["release_date"] = _to_string(bios_records[0].get("ReleaseDate"))
+        motherboard_info["release_date"] = _format_cim_datetime(
+            bios_records[0].get("ReleaseDate")
+        )
 
     return motherboard_info
+
+
+def _collect_bios_info() -> dict[str, str | None]:
+    bios_info = {
+        "manufacturer": None,
+        "version": None,
+        "release_date": None,
+    }
+
+    bios_records = _normalize_records(
+        _run_powershell_json(
+            "Get-CimInstance Win32_BIOS | "
+            "Select-Object -First 1 Manufacturer, SMBIOSBIOSVersion, ReleaseDate | "
+            "ConvertTo-Json -Compress"
+        )
+    )
+    if bios_records:
+        bios_info["manufacturer"] = _to_string(bios_records[0].get("Manufacturer"))
+        bios_info["version"] = _to_string(bios_records[0].get("SMBIOSBIOSVersion"))
+        bios_info["release_date"] = _format_cim_datetime(
+            bios_records[0].get("ReleaseDate")
+        )
+
+    return bios_info
+
+
+def _collect_os_info() -> dict[str, str | None]:
+    os_info = {
+        "name": None,
+        "caption": None,
+        "version": None,
+        "architecture": None,
+    }
+
+    os_records = _normalize_records(
+        _run_powershell_json(
+            "Get-CimInstance Win32_OperatingSystem | "
+            "Select-Object -First 1 Caption, Version, OSArchitecture | "
+            "ConvertTo-Json -Compress"
+        )
+    )
+    if os_records:
+        caption = _to_string(os_records[0].get("Caption"))
+        os_info["caption"] = caption
+        os_info["name"] = caption
+        os_info["version"] = _to_string(os_records[0].get("Version"))
+        os_info["architecture"] = _to_string(os_records[0].get("OSArchitecture"))
+
+    return os_info
 
 
 def _collect_cooling_info() -> dict[str, list[dict[str, object]]]:
@@ -485,14 +629,20 @@ def _collect_platform_info() -> dict[str, str | None]:
 
 def collect_system_info() -> dict[str, object]:
     gpu, gpu_devices = _collect_gpu_info()
+    motherboard_info = _collect_motherboard_info()
+    bios_info = _collect_bios_info()
+    os_info = _collect_os_info()
+    ram_info = _collect_ram_info()
 
     return {
         "cpu": _collect_cpu_info(),
-        "ram": _collect_ram_info(),
+        "ram": ram_info,
         "disks": _collect_disks_info(),
         "gpu": gpu,
         "gpu_devices": gpu_devices,
-        "motherboard": _collect_motherboard_info(),
+        "motherboard": motherboard_info,
+        "bios": bios_info,
+        "os": os_info,
         "cooling": _collect_cooling_info(),
         "temperatures": _collect_temperatures_info(),
         "battery": _collect_battery_info(),

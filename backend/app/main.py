@@ -806,6 +806,14 @@ def _normalize_dashboard_status(value: object) -> str:
     return "unknown"
 
 
+def _collect_system_info_safe() -> dict[str, object]:
+    try:
+        system_info = collect_system_info()
+        return system_info if isinstance(system_info, dict) else {}
+    except Exception:
+        return {}
+
+
 def _build_dashboard_card(
     *,
     card_id: str,
@@ -839,9 +847,268 @@ def _has_high_risk_drive(drives: list[object]) -> bool:
     return False
 
 
+def _get_dashboard_drive_name(drive_payload: object) -> str:
+    if not isinstance(drive_payload, dict):
+        return "накопитель"
+    return (
+        _safe_text(drive_payload.get("model"))
+        or _safe_text(drive_payload.get("name"))
+        or "накопитель"
+    )
+
+
+def _build_dashboard_score_detail(
+    *,
+    label: str,
+    penalty: int,
+    reason: str,
+    component: str,
+) -> dict[str, object]:
+    return {
+        "label": label,
+        "penalty": penalty,
+        "reason": reason,
+        "component": component,
+    }
+
+
+def _build_dashboard_overall_payload(
+    warnings_payload: object,
+    ml_prediction_payload: object,
+    smart_drives: list[object],
+    external_tools_payload: object,
+    cards: list[dict[str, object]],
+) -> dict[str, object]:
+    score = 100
+    score_details: list[dict[str, object]] = []
+    problematic_drive_names: set[str] = set()
+    critical_non_disk_count = sum(
+        1
+        for card in cards
+        if isinstance(card, dict)
+        and card.get("id") != "disk"
+        and card.get("status") in {"critical", "error"}
+    )
+    external_error_count = 0
+
+    def add_detail(
+        *,
+        label: str,
+        penalty: int,
+        reason: str,
+        component: str,
+    ) -> None:
+        nonlocal score
+        score -= penalty
+        score_details.append(
+            _build_dashboard_score_detail(
+                label=label,
+                penalty=penalty,
+                reason=reason,
+                component=component,
+            )
+        )
+
+    prediction_payload = (
+        ml_prediction_payload.get("prediction")
+        if isinstance(ml_prediction_payload, dict)
+        else None
+    )
+    source_drive_payload = (
+        ml_prediction_payload.get("source_drive")
+        if isinstance(ml_prediction_payload, dict)
+        and isinstance(ml_prediction_payload.get("source_drive"), dict)
+        else None
+    )
+    ml_status = _safe_text(
+        prediction_payload.get("status")
+        if isinstance(prediction_payload, dict)
+        else None
+    )
+    ml_risk_percent = _to_float(
+        prediction_payload.get("risk_percent")
+        if isinstance(prediction_payload, dict)
+        else None
+    )
+
+    if ml_status == "high_risk" or (
+        isinstance(ml_risk_percent, (int, float)) and ml_risk_percent >= 50
+    ):
+        drive_name = _get_dashboard_drive_name(source_drive_payload)
+        problematic_drive_names.add(drive_name)
+        add_detail(
+            label="Повышенный риск по модели",
+            penalty=15,
+            reason=f"Повышенный риск по SMART-признакам: {drive_name}.",
+            component="Disk",
+        )
+
+    for drive_payload in smart_drives:
+        if not isinstance(drive_payload, dict):
+            continue
+
+        drive_name = _get_dashboard_drive_name(drive_payload)
+        reallocated = _to_float(
+            drive_payload.get("reallocated_sectors_count")
+            or drive_payload.get("reallocated_sectors")
+            or drive_payload.get("reallocated_sector_count")
+        )
+        pending = _to_float(drive_payload.get("current_pending_sector_count"))
+        uncorrectable = _to_float(
+            drive_payload.get("offline_uncorrectable")
+            or drive_payload.get("reported_uncorrectable_errors")
+        )
+        crc_errors = _to_float(drive_payload.get("udma_crc_error_count"))
+
+        if isinstance(reallocated, (int, float)) and reallocated > 0:
+            problematic_drive_names.add(drive_name)
+            add_detail(
+                label="Переназначенные сектора",
+                penalty=5,
+                reason=(
+                    f"У накопителя {drive_name} обнаружены "
+                    f"переназначенные сектора: {int(reallocated)}."
+                ),
+                component="Disk",
+            )
+        if isinstance(pending, (int, float)) and pending > 0:
+            problematic_drive_names.add(drive_name)
+            add_detail(
+                label="Ожидающие сектора",
+                penalty=10,
+                reason=(
+                    f"У накопителя {drive_name} есть ожидающие сектора: "
+                    f"{int(pending)}."
+                ),
+                component="Disk",
+            )
+        if isinstance(uncorrectable, (int, float)) and uncorrectable > 0:
+            problematic_drive_names.add(drive_name)
+            add_detail(
+                label="Некорректируемые ошибки",
+                penalty=10,
+                reason=(
+                    f"У накопителя {drive_name} есть некорректируемые "
+                    f"SMART-ошибки."
+                ),
+                component="Disk",
+            )
+        if isinstance(crc_errors, (int, float)) and crc_errors > 0:
+            problematic_drive_names.add(drive_name)
+            add_detail(
+                label="CRC ошибки",
+                penalty=2,
+                reason=f"У накопителя {drive_name} зафиксированы CRC-ошибки.",
+                component="Disk",
+            )
+
+    warning_items = _safe_list(
+        warnings_payload.get("items") if isinstance(warnings_payload, dict) else []
+    )
+    for warning_payload in warning_items:
+        if not isinstance(warning_payload, dict):
+            continue
+
+        component = _safe_text(warning_payload.get("component")) or "System"
+        metric_name = (_safe_text(warning_payload.get("metric")) or "").lower()
+        level = (_safe_text(warning_payload.get("level")) or "warning").lower()
+
+        if component == "Disk" and metric_name == "ml_smart_failure_prediction":
+            continue
+
+        if "temp" in metric_name or "temperature" in metric_name or "thermal" in metric_name:
+            add_detail(
+                label="Температурное предупреждение",
+                penalty=20 if level == "critical" else 10,
+                reason=(
+                    _safe_text(warning_payload.get("message"))
+                    or f"Есть температурное предупреждение по компоненту {component}."
+                ),
+                component=component,
+            )
+        elif component in {"CPU", "GPU", "RAM", "Cooling"} and level in {"warning", "critical"}:
+            add_detail(
+                label="Предупреждение по компоненту",
+                penalty=15 if level == "critical" else 8,
+                reason=(
+                    _safe_text(warning_payload.get("message"))
+                    or f"Есть предупреждение по компоненту {component}."
+                ),
+                component=component,
+            )
+
+    lhm_status = _safe_text(
+        _safe_get_nested(
+            external_tools_payload,
+            "libre_hardware_monitor",
+            "status",
+            default=None,
+        )
+    )
+    if lhm_status == "error":
+        external_error_count += 1
+        add_detail(
+            label="Ошибка датчиков оборудования",
+            penalty=20,
+            reason="Не удалось получить данные от датчиков оборудования.",
+            component="Sensors",
+        )
+    elif lhm_status == "not_found":
+        add_detail(
+            label="Датчики оборудования недоступны",
+            penalty=10,
+            reason="Источник данных датчиков оборудования не найден.",
+            component="Sensors",
+        )
+
+    smartctl_status = _safe_text(
+        _safe_get_nested(external_tools_payload, "smartctl", "status", default=None)
+    )
+    if smartctl_status == "error":
+        external_error_count += 1
+        add_detail(
+            label="Ошибка SMART-диагностики",
+            penalty=15,
+            reason="Не удалось получить SMART-данные через smartctl.",
+            component="SMART",
+        )
+    elif smartctl_status == "not_found":
+        add_detail(
+            label="SMART-диагностика недоступна",
+            penalty=10,
+            reason="Утилита smartctl не найдена.",
+            component="SMART",
+        )
+
+    score = max(0, min(100, score))
+    if (
+        external_error_count >= 1
+        or critical_non_disk_count >= 2
+        or (critical_non_disk_count >= 1 and len(problematic_drive_names) >= 1)
+        or len(problematic_drive_names) >= 2
+    ):
+        status = "critical"
+    elif score_details:
+        status = "warning"
+    else:
+        status = "ok"
+
+    return {
+        "status": status,
+        "health_score": int(round(score)),
+        "reason": (
+            score_details[0]["reason"]
+            if score_details
+            else "Критичных предупреждений не обнаружено."
+        ),
+        "score_details": score_details,
+    }
+
+
 def _build_dashboard_payload(
     system_status_payload: object,
     device: Device | None = None,
+    system_info_payload: object = None,
 ) -> dict[str, object]:
     metrics_data = _safe_dict(
         _safe_get_nested(system_status_payload, "metrics", "data", default={})
@@ -864,6 +1131,13 @@ def _build_dashboard_payload(
     )
     components = _safe_dict(_safe_get_nested(warnings_payload, "components", default={}))
     smart_drives = _safe_list(smart_payload.get("drives"))
+    external_tools_payload = _safe_dict(
+        _safe_get_nested(system_status_payload, "external_tools", default={})
+    )
+    configuration_payload = _build_dashboard_configuration_payload(
+        system_info_payload,
+        drives_count=len(smart_drives),
+    )
 
     ml_risk_percent = _round_optional_number(prediction_payload.get("risk_percent"))
     ml_status = _safe_text(prediction_payload.get("status"))
@@ -951,12 +1225,22 @@ def _build_dashboard_payload(
             },
         ),
     ]
+    overall_payload = _build_dashboard_overall_payload(
+        warnings_payload,
+        ml_prediction_payload,
+        smart_drives,
+        external_tools_payload,
+        cards,
+    )
 
     return {
-        "device": _build_dashboard_device_payload(device),
+        "device": _build_dashboard_device_payload(device, configuration_payload),
+        "configuration": configuration_payload,
         "overall": {
-            "status": _normalize_dashboard_status(warnings_payload.get("status")),
-            "health_score": _round_optional_number(warnings_payload.get("health_score")),
+            "status": _normalize_dashboard_status(overall_payload.get("status")),
+            "health_score": _round_optional_number(overall_payload.get("health_score")),
+            "reason": _safe_text(overall_payload.get("reason")),
+            "score_details": _safe_list(overall_payload.get("score_details")),
             "updated_at": f"{datetime.utcnow().isoformat()}Z",
         },
         "cards": cards,
@@ -986,25 +1270,127 @@ def _build_dashboard_payload(
         "recommendations": {
             "items": _safe_list(recommendations_payload.get("items")),
         },
-        "external_tools": _safe_dict(
-            _safe_get_nested(system_status_payload, "external_tools", default={})
-        ),
+        "external_tools": external_tools_payload,
     }
 
 
-def _build_dashboard_device_payload(device: Device | None) -> dict[str, object]:
+def _build_dashboard_configuration_payload(
+    system_info_payload: object,
+    *,
+    drives_count: int = 0,
+) -> dict[str, object]:
+    cpu_payload = _safe_dict(_safe_get_nested(system_info_payload, "cpu", default={}))
+    gpu_payload = _safe_dict(_safe_get_nested(system_info_payload, "gpu", default={}))
+    ram_payload = _safe_dict(_safe_get_nested(system_info_payload, "ram", default={}))
+    motherboard_payload = _safe_dict(
+        _safe_get_nested(system_info_payload, "motherboard", default={})
+    )
+    bios_payload = _safe_dict(_safe_get_nested(system_info_payload, "bios", default={}))
+    os_payload = _safe_dict(_safe_get_nested(system_info_payload, "os", default={}))
+
+    return {
+        "cpu": {
+            "name": _safe_text(cpu_payload.get("name")),
+            "physical_cores": cpu_payload.get("physical_cores"),
+            "logical_processors": cpu_payload.get("logical_processors")
+            or cpu_payload.get("logical_cores"),
+            "threads": cpu_payload.get("threads")
+            or cpu_payload.get("logical_processors")
+            or cpu_payload.get("logical_cores"),
+            "max_clock_mhz": _round_optional_number(
+                cpu_payload.get("max_clock_mhz") or cpu_payload.get("max_frequency_mhz")
+            ),
+        },
+        "gpu": {
+            "name": _safe_text(gpu_payload.get("name")),
+            "driver_version": _safe_text(gpu_payload.get("driver_version")),
+            "adapter_ram_gb": _round_optional_number(gpu_payload.get("adapter_ram_gb")),
+        },
+        "ram": {
+            "total_gb": _round_optional_number(ram_payload.get("total_gb")),
+            "modules_count": ram_payload.get("modules_count"),
+            "modules": _safe_list(ram_payload.get("modules") or ram_payload.get("memory_modules")),
+        },
+        "motherboard": {
+            "manufacturer": _safe_text(motherboard_payload.get("manufacturer")),
+            "model": _safe_text(
+                motherboard_payload.get("model") or motherboard_payload.get("product")
+            ),
+            "product": _safe_text(motherboard_payload.get("product")),
+        },
+        "bios": {
+            "manufacturer": _safe_text(
+                bios_payload.get("manufacturer")
+                or motherboard_payload.get("bios_manufacturer")
+            ),
+            "version": _safe_text(
+                bios_payload.get("version") or motherboard_payload.get("bios_version")
+            ),
+            "release_date": _safe_text(
+                bios_payload.get("release_date") or motherboard_payload.get("release_date")
+            ),
+        },
+        "os": {
+            "name": _safe_text(os_payload.get("name") or os_payload.get("caption")),
+            "version": _safe_text(os_payload.get("version")),
+            "architecture": _safe_text(os_payload.get("architecture")),
+        },
+        "drives_count": drives_count,
+    }
+
+
+def _build_dashboard_device_payload(
+    device: Device | None,
+    configuration_payload: object = None,
+) -> dict[str, object]:
+    configuration = (
+        configuration_payload.copy()
+        if isinstance(configuration_payload, dict)
+        else {}
+    )
+    ram_payload = (
+        configuration.get("ram")
+        if isinstance(configuration.get("ram"), dict)
+        else {}
+    )
+    motherboard_payload = (
+        configuration.get("motherboard")
+        if isinstance(configuration.get("motherboard"), dict)
+        else None
+    )
+    bios_payload = (
+        configuration.get("bios")
+        if isinstance(configuration.get("bios"), dict)
+        else None
+    )
+    os_payload = (
+        configuration.get("os")
+        if isinstance(configuration.get("os"), dict)
+        else None
+    )
+
     if device is None:
         return {
             "id": None,
             "name": None,
             "cpu": None,
             "gpu": None,
+            "ram_total_gb": ram_payload.get("total_gb"),
+            "ram_modules_count": ram_payload.get("modules_count"),
+            "motherboard": motherboard_payload,
+            "bios": bios_payload,
+            "os": os_payload,
         }
     return {
         "id": device.id,
         "name": device.name,
         "cpu": device.cpu,
         "gpu": device.gpu,
+        "ram_total_gb": ram_payload.get("total_gb"),
+        "ram_modules_count": ram_payload.get("modules_count"),
+        "motherboard": motherboard_payload,
+        "bios": bios_payload,
+        "os": os_payload,
     }
 
 
@@ -1034,12 +1420,12 @@ def _merge_ml_prediction_into_status_payloads(
     ml_warning_message = (
         "ML-\u043c\u043e\u0434\u0435\u043b\u044c \u0432\u044b\u044f\u0432\u0438\u043b\u0430 "
         "\u043f\u043e\u0432\u044b\u0448\u0435\u043d\u043d\u044b\u0439 \u0440\u0438\u0441\u043a "
-        "\u043e\u0442\u043a\u0430\u0437\u0430 \u043d\u0430\u043a\u043e\u043f\u0438\u0442\u0435\u043b\u044f "
-        "\u0432 \u0442\u0435\u0447\u0435\u043d\u0438\u0435 30 \u0434\u043d\u0435\u0439."
+        "\u043f\u043e SMART-\u043f\u0440\u0438\u0437\u043d\u0430\u043a\u0430\u043c "
+        "\u043d\u0430\u043a\u043e\u043f\u0438\u0442\u0435\u043b\u044f."
     )
     risk_percent = prediction_payload.get("risk_percent")
     warning_item = {
-        "level": "critical",
+        "level": "warning",
         "component": "Disk",
         "metric": "ml_smart_failure_prediction",
         "value": risk_percent,
@@ -1078,8 +1464,17 @@ def _merge_ml_prediction_into_status_payloads(
     if not isinstance(recommendation_items, list):
         recommendation_items = []
 
-    ml_recommendation_message = prediction_payload.get("recommendation")
-    if isinstance(ml_recommendation_message, str) and ml_recommendation_message.strip():
+    ml_recommendation_message = (
+        "\u0420\u0435\u043a\u043e\u043c\u0435\u043d\u0434\u0443\u0435\u0442\u0441\u044f "
+        "\u0441\u043e\u0437\u0434\u0430\u0442\u044c \u0438\u043b\u0438 "
+        "\u043e\u0431\u043d\u043e\u0432\u0438\u0442\u044c \u0440\u0435\u0437\u0435\u0440\u0432\u043d\u0443\u044e "
+        "\u043a\u043e\u043f\u0438\u044e \u0432\u0430\u0436\u043d\u044b\u0445 \u0434\u0430\u043d\u043d\u044b\u0445, "
+        "\u043f\u0440\u043e\u0432\u0435\u0441\u0442\u0438 \u0440\u0430\u0441\u0448\u0438\u0440\u0435\u043d\u043d\u0443\u044e "
+        "SMART-\u0434\u0438\u0430\u0433\u043d\u043e\u0441\u0442\u0438\u043a\u0443 \u0438 "
+        "\u043d\u0430\u0431\u043b\u044e\u0434\u0430\u0442\u044c \u0437\u0430 \u0434\u0438\u043d\u0430\u043c\u0438\u043a\u043e\u0439 "
+        "\u043f\u043e\u043a\u0430\u0437\u0430\u0442\u0435\u043b\u0435\u0439."
+    )
+    if ml_recommendation_message.strip():
         if not any(
             isinstance(item, dict) and item.get("message") == ml_recommendation_message
             for item in recommendation_items
@@ -1412,9 +1807,13 @@ def get_dashboard() -> dict[str, object]:
     try:
         with SessionLocal() as db:
             default_device = get_default_device(db)
-        return _build_dashboard_payload(get_system_status(), default_device)
+        return _build_dashboard_payload(
+            get_system_status(),
+            default_device,
+            _collect_system_info_safe(),
+        )
     except Exception:
-        return _build_dashboard_payload({})
+        return _build_dashboard_payload({}, None, {})
 
 
 @app.get("/dashboard/history")
