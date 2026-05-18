@@ -1,16 +1,20 @@
 const BACKEND_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
 
-const DEV_API_BASE_URL = import.meta.env.DEV ? "/api" : BACKEND_BASE_URL;
 const API_BASE_URL = import.meta.env.VITE_API_PROXY_BYPASS === "true"
   ? BACKEND_BASE_URL
-  : DEV_API_BASE_URL;
+  : import.meta.env.DEV
+    ? "/api"
+    : "";
 
 function buildNetworkError(path, error) {
   const details =
     error instanceof Error && error.message ? `: ${error.message}` : "";
+  const serviceHint = import.meta.env.DEV
+    ? `Проверьте Vite dev server и backend API (${BACKEND_BASE_URL})`
+    : `Проверьте backend API (${BACKEND_BASE_URL})`;
   return new Error(
-    `Не удалось загрузить ${path}. Проверьте Vite dev server и backend API (${BACKEND_BASE_URL})${details}`,
+    `Не удалось загрузить ${path}. ${serviceHint}${details}`,
   );
 }
 

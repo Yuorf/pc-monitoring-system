@@ -1,7 +1,9 @@
 import asyncio
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import inspect, text
 
@@ -39,6 +41,22 @@ from app.services.warning_service import (
 )
 
 app = FastAPI(title=settings.APP_NAME)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+FRONTEND_DIST_DIR = PROJECT_ROOT / "frontend" / "dist"
+FRONTEND_INDEX_FILE = FRONTEND_DIST_DIR / "index.html"
+RESERVED_FRONTEND_FALLBACK_PREFIXES = {
+    "api",
+    "dashboard",
+    "devices",
+    "docs",
+    "health",
+    "metrics",
+    "ml",
+    "openapi.json",
+    "redoc",
+    "system",
+}
 
 MEASUREMENT_COLUMN_TYPES = {
     "gpu_usage": "FLOAT",
@@ -86,6 +104,34 @@ class SmartPredictionRequest(BaseModel):
     smart_197_raw: float | None = 0
     smart_198_raw: float | None = 0
     smart_199_raw: float | None = 0
+
+
+def _get_frontend_dist_file(path: str) -> Path | None:
+    normalized_path = path.strip("/")
+    if not normalized_path:
+        return None
+
+    frontend_dist_root = FRONTEND_DIST_DIR.resolve()
+    candidate = (frontend_dist_root / normalized_path).resolve()
+
+    try:
+        candidate.relative_to(frontend_dist_root)
+    except ValueError:
+        return None
+
+    if candidate.is_file():
+        return candidate
+
+    return None
+
+
+def _is_reserved_frontend_fallback_path(path: str) -> bool:
+    normalized_path = path.strip("/")
+    if not normalized_path:
+        return False
+
+    first_segment = normalized_path.split("/", 1)[0]
+    return first_segment in RESERVED_FRONTEND_FALLBACK_PREFIXES
 
 
 def measurement_to_dict(
@@ -2375,3 +2421,26 @@ def delete_device(id: int) -> dict[str, str]:
         db.delete(device)
         db.commit()
         return {"message": "Device deleted successfully"}
+
+
+@app.get("/", include_in_schema=False)
+def serve_frontend_index() -> FileResponse:
+    if FRONTEND_INDEX_FILE.is_file():
+        return FileResponse(FRONTEND_INDEX_FILE)
+
+    raise HTTPException(status_code=404, detail="Frontend build not found")
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def serve_frontend_dist(full_path: str) -> FileResponse:
+    frontend_file = _get_frontend_dist_file(full_path)
+    if frontend_file is not None:
+        return FileResponse(frontend_file)
+
+    if _is_reserved_frontend_fallback_path(full_path):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    if FRONTEND_INDEX_FILE.is_file():
+        return FileResponse(FRONTEND_INDEX_FILE)
+
+    raise HTTPException(status_code=404, detail="Frontend build not found")
