@@ -23,3 +23,6 @@ backend/tools/LibreHardwareMonitor/
 tools/LibreHardwareMonitor/
 frontend/node_modules/
 frontend/dist/
+
+build/
+dist/
