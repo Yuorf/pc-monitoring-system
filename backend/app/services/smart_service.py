@@ -1,10 +1,11 @@
 import json
 import os
 import re
-import shutil
 import subprocess
 from urllib.error import URLError
 from urllib.request import urlopen
+
+from app.services.external_tools_service import find_smartctl_executable
 
 
 SOURCE_PRIORITY = {
@@ -942,15 +943,8 @@ def _collect_libre_hardware_monitor() -> tuple[list[dict[str, object]], bool]:
 
 
 def _find_smartctl_path() -> str | None:
-    for candidate in (
-        shutil.which("smartctl"),
-        shutil.which("smartctl.exe"),
-        r"C:\Program Files\smartmontools\bin\smartctl.exe",
-        r"C:\Program Files (x86)\smartmontools\bin\smartctl.exe",
-    ):
-        if candidate and os.path.exists(candidate):
-            return candidate
-    return None
+    smartctl_path = find_smartctl_executable()
+    return str(smartctl_path) if smartctl_path is not None else None
 
 
 def _parse_smartctl_scan_line(line: str) -> tuple[str, str | None] | None:

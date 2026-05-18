@@ -25,7 +25,7 @@ function Copy-DirectoryFiltered {
   New-Item -ItemType Directory -Path $Destination -Force | Out-Null
 
   $excludeDirs = @("__pycache__", ".git", "venv", "node_modules", "src")
-  $excludeFiles = @("*.pyc", "*.pyo", "*.db")
+  $excludeFiles = @("*.pyc", "*.pyo", "*.db", "*.tmp", "*.temp", "*.log")
 
   foreach ($item in Get-ChildItem -Path $Source -Force) {
     if ($item.PSIsContainer) {

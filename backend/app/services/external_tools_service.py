@@ -11,6 +11,10 @@ LHM_PROCESS_NAME = "LibreHardwareMonitor.exe"
 SMARTCTL_EXE_NAME = "smartctl.exe"
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SMARTCTL_PROGRAM_FILES_CANDIDATES = (
+    Path(r"C:\Program Files\smartmontools\bin") / SMARTCTL_EXE_NAME,
+    Path(r"C:\Program Files (x86)\smartmontools\bin") / SMARTCTL_EXE_NAME,
+)
 
 
 def _normalize_configured_path(path_value: str | None) -> Path | None:
@@ -86,6 +90,7 @@ def get_smartctl_candidate_paths() -> list[Path]:
         if executable_path:
             candidates.append(Path(executable_path))
 
+    candidates.extend(SMARTCTL_PROGRAM_FILES_CANDIDATES)
     return _deduplicate_paths(candidates)
 
 
@@ -133,6 +138,20 @@ def is_process_running(process_name: str) -> bool:
         return False
 
 
+def _build_windows_startupinfo() -> subprocess.STARTUPINFO | None:
+    if os.name != "nt" or not hasattr(subprocess, "STARTUPINFO"):
+        return None
+
+    startup_info = subprocess.STARTUPINFO()
+    startup_info.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+    startup_info.wShowWindow = getattr(
+        subprocess,
+        "SW_HIDE",
+        getattr(subprocess, "SW_MINIMIZE", 6),
+    )
+    return startup_info
+
+
 def start_lhm_if_needed() -> dict[str, object]:
     process_name = LHM_PROCESS_NAME
 
@@ -165,12 +184,14 @@ def start_lhm_if_needed() -> dict[str, object]:
 
     try:
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        startup_info = _build_windows_startupinfo()
         subprocess.Popen(
             [str(executable_path)],
             cwd=str(executable_path.parent),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=creation_flags,
+            startupinfo=startup_info,
         )
         time.sleep(max(settings.LIBRE_HARDWARE_MONITOR_STARTUP_WAIT_SECONDS, 0.0))
         return {

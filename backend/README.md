@@ -119,6 +119,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-launcher.ps1
 
 - `dist\PCMonitoringSystem\PCMonitoringSystem.exe`
 
+Для portable SMART желательно положить `smartctl.exe` в
+`backend/tools/smartmontools/bin`.
+
+Если bundled `smartctl` отсутствует, backend попробует использовать системный
+`smartctl`, если он установлен.
+
 Это пока не инсталлер, а portable-сборка launcher.
 
 ## Проверка проекта
