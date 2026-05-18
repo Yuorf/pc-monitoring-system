@@ -159,6 +159,10 @@ portable-запуска Vite не нужен.
 Portable launcher и installer не являются заменой dev-режиму, а работают
 поверх production backend + frontend build.
 
+Обучающие ML-датасеты не включаются в portable и installer. В сборку попадают
+только runtime-файлы, необходимые для запуска приложения и ML-прогноза, включая
+`backend/ml/models`.
+
 ## Проверка проекта
 
 Полная локальная проверка:

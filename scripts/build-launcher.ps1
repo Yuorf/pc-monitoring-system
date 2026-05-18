@@ -20,26 +20,46 @@ $stagingFrontendDist = Join-Path $stagingRoot "frontend\dist"
 function Copy-DirectoryFiltered {
   param(
     [Parameter(Mandatory = $true)][string]$Source,
-    [Parameter(Mandatory = $true)][string]$Destination
+    [Parameter(Mandatory = $true)][string]$Destination,
+    [string[]]$ExcludedRelativeDirectories = @(),
+    [string[]]$ExcludedFilePatterns = @(),
+    [string]$RootPath = $Source
   )
 
   New-Item -ItemType Directory -Path $Destination -Force | Out-Null
 
   $excludeDirs = @("__pycache__", ".git", "venv", "node_modules", "src")
   $excludeFiles = @("*.pyc", "*.pyo", "*.db", "*.tmp", "*.temp", "*.log")
+  $resolvedRootPath = [System.IO.Path]::GetFullPath($RootPath)
+  $normalizedExcludedDirectories = $ExcludedRelativeDirectories | ForEach-Object {
+    $_.Replace("/", "\").TrimStart("\")
+  }
 
   foreach ($item in Get-ChildItem -Path $Source -Force) {
+    $itemFullPath = [System.IO.Path]::GetFullPath($item.FullName)
+    $relativePath = $itemFullPath.Substring($resolvedRootPath.Length).TrimStart("\")
+    $normalizedRelativePath = $relativePath.Replace("/", "\")
+
     if ($item.PSIsContainer) {
       if ($excludeDirs -contains $item.Name) {
         continue
       }
 
-      Copy-DirectoryFiltered -Source $item.FullName -Destination (Join-Path $Destination $item.Name)
+      if ($normalizedExcludedDirectories -contains $normalizedRelativePath) {
+        continue
+      }
+
+      Copy-DirectoryFiltered `
+        -Source $item.FullName `
+        -Destination (Join-Path $Destination $item.Name) `
+        -ExcludedRelativeDirectories $ExcludedRelativeDirectories `
+        -ExcludedFilePatterns $ExcludedFilePatterns `
+        -RootPath $resolvedRootPath
       continue
     }
 
     $skipFile = $false
-    foreach ($pattern in $excludeFiles) {
+    foreach ($pattern in @($excludeFiles + $ExcludedFilePatterns)) {
       if ($item.Name -like $pattern) {
         $skipFile = $true
         break
@@ -112,7 +132,17 @@ try {
   New-Item -ItemType Directory -Path (Join-Path $stagingBackend "data") -Force | Out-Null
 
   Copy-DirectoryFiltered -Source (Join-Path $projectRoot "backend\app") -Destination (Join-Path $stagingBackend "app")
-  Copy-DirectoryFiltered -Source (Join-Path $projectRoot "backend\ml") -Destination (Join-Path $stagingBackend "ml")
+  Copy-DirectoryFiltered `
+    -Source (Join-Path $projectRoot "backend\ml") `
+    -Destination (Join-Path $stagingBackend "ml") `
+    -ExcludedRelativeDirectories @(
+      "data\raw",
+      "data\processed",
+      "reports",
+      "reports_local_backup",
+      "models_local_backup"
+    ) `
+    -ExcludedFilePatterns @("*.csv", "*.parquet", "*.jsonl")
   Copy-DirectoryFiltered -Source (Join-Path $projectRoot "frontend\dist") -Destination $stagingFrontendDist
 
   if (Test-Path (Join-Path $projectRoot "backend\tools")) {
