@@ -405,6 +405,10 @@ textarea {
   margin-top: 18px;
 }
 
+.component-detail-panel > .drives-panel {
+  margin-top: 16px;
+}
+
 .score-details-panel,
 .component-drive-list {
   margin-top: 18px;
