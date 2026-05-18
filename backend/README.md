@@ -1,25 +1,100 @@
-# PC Monitoring System Dev Run
+# PC Monitoring System
 
-## Backend
+## Структура проекта
+
+- `backend` — FastAPI backend
+- `frontend` — Vite/React frontend
+- `scripts` — PowerShell-скрипты для локального запуска и проверки
+
+## Локальный запуск
+
+### Backend
+
+Из папки проекта:
 
 ```powershell
-cd D:\Projects\pc-monitoring-system\backend
-.\venv\Scripts\Activate.ps1
-python -m uvicorn app.main:app --reload
+powershell -ExecutionPolicy Bypass -File .\scripts\start-backend.ps1
 ```
 
-Backend API is expected at `http://127.0.0.1:8000`.
+Что делает скрипт:
 
-## Frontend
+- переходит в `backend`
+- активирует `backend\venv`
+- запускает FastAPI через `python -m uvicorn app.main:app --host 127.0.0.1 --port 8000`
+
+Backend слушает:
+
+- `http://127.0.0.1:8000`
+
+### Frontend
+
+Из папки проекта:
 
 ```powershell
-cd D:\Projects\pc-monitoring-system\frontend
-npm run dev
+powershell -ExecutionPolicy Bypass -File .\scripts\start-frontend.ps1
 ```
 
-Frontend dev server is expected at `http://localhost:5173`.
+Что делает скрипт:
 
-## Notes
+- переходит в `frontend`
+- запускает `npm run dev`
 
-- Vite proxy forwards `/api/*` to `http://127.0.0.1:8000/*`.
-- If you want the frontend to bypass Vite proxy and call backend directly, set `VITE_API_PROXY_BYPASS=true`.
+Frontend доступен по адресу:
+
+- `http://localhost:5173`
+
+### Backend + frontend вместе
+
+Из папки проекта:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
+```
+
+Скрипт открывает два отдельных окна PowerShell:
+
+- одно для backend
+- одно для frontend
+
+После запуска интерфейс нужно открывать здесь:
+
+- `http://localhost:5173/`
+
+## Проверка проекта
+
+Полная локальная проверка:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\check-project.ps1
+```
+
+Скрипт выполняет:
+
+- `python -m py_compile` для:
+  - `app/main.py`
+  - `app/services/ml_prediction_service.py`
+  - `app/services/system_info.py`
+  - `app/services/external_tools_service.py`
+- `npm run lint`
+- `npm run build`
+
+## Порты
+
+- backend: `127.0.0.1:8000`
+- frontend: `localhost:5173`
+
+## База данных
+
+- По умолчанию backend использует SQLite.
+- Текущие скрипты запуска не меняют настройку SQLite/PostgreSQL.
+
+## Датчики и права доступа
+
+- Для полного набора аппаратных датчиков backend лучше запускать от имени администратора.
+- Это особенно полезно для корректной работы проверок, связанных с Libre Hardware Monitor и SMART.
+
+## Примечания
+
+- Vite proxy проксирует `/api/*` на backend.
+- Для проверки backend через frontend proxy откройте интерфейс на `http://localhost:5173/`.
+- Если нужно обойти Vite proxy и обращаться к backend напрямую, используйте `VITE_API_PROXY_BYPASS=true`.
