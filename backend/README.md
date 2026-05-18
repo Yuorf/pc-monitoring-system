@@ -60,6 +60,41 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 
 - `http://localhost:5173/`
 
+## Production-запуск
+
+### Сборка frontend
+
+Из папки проекта:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-frontend.ps1
+```
+
+Скрипт собирает production frontend в `frontend/dist`.
+
+### Запуск production
+
+После сборки frontend:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-production.ps1
+```
+
+Что делает скрипт:
+
+- проверяет наличие `frontend/dist/index.html`
+- активирует `backend\venv`
+- запускает FastAPI на `127.0.0.1:8000`
+- открывает production-интерфейс в браузере
+
+Production-интерфейс доступен по адресу:
+
+- `http://127.0.0.1:8000/`
+
+Для production-запуска `npm run dev` и Vite frontend server не нужны.
+
+`start-dev.ps1` остаётся сценарием только для разработки.
+
 ## Проверка проекта
 
 Полная локальная проверка:
