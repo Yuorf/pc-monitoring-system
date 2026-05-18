@@ -167,6 +167,7 @@ try {
     "--noconfirm",
     "--clean",
     "--onedir",
+    "--windowed",
     "--name", $launcherName,
     "--distpath", $distRoot,
     "--workpath", $workPath,

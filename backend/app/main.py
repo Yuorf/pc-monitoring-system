@@ -88,6 +88,7 @@ EXTERNAL_TOOLS_STATUS: dict[str, dict[str, object]] = {
         "process_name": LHM_PROCESS_NAME,
     }
 }
+METRICS_COLLECTOR_TASK: asyncio.Task[None] | None = None
 
 
 class SmartPredictionRequest(BaseModel):
@@ -1667,6 +1668,11 @@ def _build_health_check_payload() -> dict[str, object]:
 
 
 async def background_metrics_collector() -> None:
+    fast_startup_deadline = (
+        asyncio.get_running_loop().time()
+        + max(settings.METRICS_FAST_STARTUP_DURATION_SECONDS, 0)
+    )
+
     while True:
         with SessionLocal() as db:
             device = get_default_device(db)
@@ -1696,12 +1702,25 @@ async def background_metrics_collector() -> None:
                 db.add(measurement)
                 db.commit()
 
-        await asyncio.sleep(settings.METRICS_COLLECTION_INTERVAL_SECONDS)
+        collection_interval_seconds = max(
+            settings.METRICS_COLLECTION_INTERVAL_SECONDS,
+            1,
+        )
+        if (
+            settings.METRICS_FAST_STARTUP_ENABLED
+            and asyncio.get_running_loop().time() < fast_startup_deadline
+        ):
+            collection_interval_seconds = max(
+                settings.METRICS_FAST_STARTUP_INTERVAL_SECONDS,
+                1,
+            )
+
+        await asyncio.sleep(collection_interval_seconds)
 
 
 @app.on_event("startup")
 async def startup() -> None:
-    global EXTERNAL_TOOLS_STATUS
+    global EXTERNAL_TOOLS_STATUS, METRICS_COLLECTOR_TASK
 
     try:
         EXTERNAL_TOOLS_STATUS["libre_hardware_monitor"] = await asyncio.to_thread(
@@ -1725,7 +1744,11 @@ async def startup() -> None:
         with SessionLocal() as db:
             db.execute(text("SELECT 1"))
             get_default_device(db)
-        asyncio.create_task(background_metrics_collector())
+        if METRICS_COLLECTOR_TASK is None or METRICS_COLLECTOR_TASK.done():
+            METRICS_COLLECTOR_TASK = asyncio.create_task(
+                background_metrics_collector(),
+                name="background-metrics-collector",
+            )
         print("Database connected")
     except Exception as error:
         print(error)

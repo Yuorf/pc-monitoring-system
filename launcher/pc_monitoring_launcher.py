@@ -260,8 +260,11 @@ def wait_for_backend_health(process: subprocess.Popen[bytes], collector: OutputC
     )
 
 
-def open_application_in_browser() -> None:
-    webbrowser.open(APP_URL)
+def open_application_in_browser() -> bool:
+    try:
+        return bool(webbrowser.open(APP_URL))
+    except Exception:
+        return False
 
 
 def open_application_in_webview(*, owns_backend: bool) -> bool:
@@ -350,7 +353,9 @@ def run_launcher_mode() -> int:
         print("Backend уже запущен. Открываю интерфейс приложения.")
         if open_application_in_webview(owns_backend=False):
             return 0
-        open_application_in_browser()
+        if not open_application_in_browser():
+            show_error("Launcher", f"Не удалось открыть интерфейс приложения: {APP_URL}")
+            return 1
         return 0
 
     backend_process: subprocess.Popen[bytes] | None = None
@@ -362,7 +367,9 @@ def run_launcher_mode() -> int:
         if open_application_in_webview(owns_backend=True):
             return 0
 
-        open_application_in_browser()
+        if not open_application_in_browser():
+            show_error("Launcher", f"Не удалось открыть интерфейс приложения: {APP_URL}")
+            return 1
         print("\u041f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u0435 \u0437\u0430\u043f\u0443\u0449\u0435\u043d\u043e.")
         print(
             f"\u0418\u043d\u0442\u0435\u0440\u0444\u0435\u0439\u0441 "

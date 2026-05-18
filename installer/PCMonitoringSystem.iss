@@ -31,10 +31,9 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "{#AppSourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-    Excludes: "_internal\backend\data\*.db,_internal\backend\data\*.db-*,_internal\backend\data\*.sqlite,_internal\backend\data\*.sqlite3"
-
+Source: "{#AppSourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "_internal\backend\data\*.db,_internal\backend\data\*.db-*,_internal\backend\data\*.sqlite,_internal\backend\data\*.sqlite3"
 [Icons]
+
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
