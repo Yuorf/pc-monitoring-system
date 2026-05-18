@@ -3,6 +3,7 @@ Set-StrictMode -Version Latest
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $launcherScript = Join-Path $projectRoot "launcher\pc_monitoring_launcher.py"
+$launcherRequirements = Join-Path $projectRoot "launcher\requirements.txt"
 $frontendDistIndex = Join-Path $projectRoot "frontend\dist\index.html"
 $venvPython = Join-Path $projectRoot "backend\venv\Scripts\python.exe"
 $pythonExe = if (Test-Path $venvPython) { $venvPython } else { "python" }
@@ -81,6 +82,19 @@ try {
     exit 1
   }
 
+  & $pythonExe -c "import webview"
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "pywebview не установлен." -ForegroundColor Red
+    Write-Host "Установите его командой:" -ForegroundColor Yellow
+    Write-Host "python -m pip install pywebview" -ForegroundColor DarkGray
+    if (Test-Path $launcherRequirements) {
+      Write-Host "Или:" -ForegroundColor Yellow
+      Write-Host "python -m pip install -r launcher\\requirements.txt" -ForegroundColor DarkGray
+    }
+    exit 1
+  }
+
   $resolvedProjectRoot = Resolve-Path $projectRoot
   $resolvedDistRoot = Join-Path $resolvedProjectRoot "dist"
   $resolvedLauncherDistDir = Join-Path $resolvedDistRoot $launcherName
@@ -143,6 +157,14 @@ try {
     "--collect-all", "scipy",
     "--collect-all", "httptools",
     "--collect-all", "websockets",
+    "--collect-all", "webview",
+    "--collect-all", "pythonnet",
+    "--collect-all", "clr_loader",
+    "--collect-all", "bottle",
+    "--collect-all", "proxy_tools",
+    "--hidden-import", "webview.platforms.edgechromium",
+    "--hidden-import", "webview.platforms.winforms",
+    "--hidden-import", "webview.platforms.mshtml",
     "--add-data", "$stagingBackend;backend",
     "--add-data", "$stagingFrontendDist;frontend/dist",
     $launcherScript

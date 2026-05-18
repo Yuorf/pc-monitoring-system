@@ -17,6 +17,11 @@ from pathlib import Path
 HOST = "127.0.0.1"
 PORT = 8000
 APP_URL = f"http://{HOST}:{PORT}/"
+WINDOW_TITLE = "PC Monitoring System"
+WINDOW_WIDTH = 1400
+WINDOW_HEIGHT = 900
+WINDOW_MIN_WIDTH = 1024
+WINDOW_MIN_HEIGHT = 640
 BACKEND_PROCESS_FLAG = "--pcms-backend-process"
 APP_ROOT_ENV_NAME = "PCMS_APP_ROOT"
 STARTUP_TIMEOUT_SECONDS = 45.0
@@ -41,6 +46,10 @@ def show_error(title: str, message: str) -> None:
         ctypes.windll.user32.MessageBoxW(0, message, title, ERROR_MESSAGEBOX_ICON)
     except Exception:
         pass
+
+
+def show_warning(message: str) -> None:
+    print(f"Предупреждение: {message}", file=sys.stderr)
 
 
 def iter_candidate_roots() -> list[Path]:
@@ -255,6 +264,33 @@ def open_application_in_browser() -> None:
     webbrowser.open(APP_URL)
 
 
+def open_application_in_webview(*, owns_backend: bool) -> bool:
+    try:
+        import webview
+    except ImportError:
+        show_warning("pywebview недоступен. Открываю интерфейс в системном браузере.")
+        return False
+
+    try:
+        print("Открываю интерфейс во встроенном окне WebView.")
+        if owns_backend:
+            print("Закройте окно приложения, чтобы завершить backend.")
+        webview.create_window(
+            WINDOW_TITLE,
+            APP_URL,
+            width=WINDOW_WIDTH,
+            height=WINDOW_HEIGHT,
+            min_size=(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT),
+        )
+        webview.start(debug=False)
+        return True
+    except Exception as error:
+        show_warning(
+            f"Не удалось запустить WebView ({error}). Открываю интерфейс в системном браузере."
+        )
+        return False
+
+
 def terminate_backend_process(process: subprocess.Popen[bytes] | None) -> None:
     if process is None or process.poll() is not None:
         return
@@ -311,11 +347,9 @@ def run_launcher_mode() -> int:
     check_frontend_dist(app_root)
 
     if backend_health_ready():
-        print(
-            "Backend \u0443\u0436\u0435 \u0437\u0430\u043f\u0443\u0449\u0435\u043d. "
-            "\u041e\u0442\u043a\u0440\u044b\u0432\u0430\u044e \u0438\u043d\u0442\u0435\u0440\u0444\u0435\u0439\u0441 "
-            "\u0432 \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435."
-        )
+        print("Backend уже запущен. Открываю интерфейс приложения.")
+        if open_application_in_webview(owns_backend=False):
+            return 0
         open_application_in_browser()
         return 0
 
@@ -324,12 +358,15 @@ def run_launcher_mode() -> int:
         backend_process, collector = spawn_backend_process(app_root)
         register_exit_handlers(backend_process)
         wait_for_backend_health(backend_process, collector)
-        open_application_in_browser()
 
+        if open_application_in_webview(owns_backend=True):
+            return 0
+
+        open_application_in_browser()
         print("\u041f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u0435 \u0437\u0430\u043f\u0443\u0449\u0435\u043d\u043e.")
         print(
-            f"\u041e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 "
-            f"\u0438\u043d\u0442\u0435\u0440\u0444\u0435\u0439\u0441: {APP_URL}"
+            f"\u0418\u043d\u0442\u0435\u0440\u0444\u0435\u0439\u0441 "
+            f"\u043e\u0442\u043a\u0440\u044b\u0442 \u043f\u043e \u0430\u0434\u0440\u0435\u0441\u0443: {APP_URL}"
         )
         print(
             "\u041d\u0430\u0436\u043c\u0438\u0442\u0435 Ctrl+C, \u0447\u0442\u043e\u0431\u044b "

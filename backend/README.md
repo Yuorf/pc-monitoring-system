@@ -109,6 +109,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-frontend.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\run-launcher-source.ps1
 ```
 
+Для встроенного окна launcher нужен `pywebview`:
+
+```powershell
+python -m pip install pywebview
+```
+
 Сборка portable launcher через PyInstaller:
 
 ```powershell
@@ -119,13 +125,39 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-launcher.ps1
 
 - `dist\PCMonitoringSystem\PCMonitoringSystem.exe`
 
+Запуск portable launcher:
+
+```powershell
+.\dist\PCMonitoringSystem\PCMonitoringSystem.exe
+```
+
 Для portable SMART желательно положить `smartctl.exe` в
 `backend/tools/smartmontools/bin`.
 
 Если bundled `smartctl` отсутствует, backend попробует использовать системный
 `smartctl`, если он установлен.
 
-Это пока не инсталлер, а portable-сборка launcher.
+Сборка installer:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1
+```
+
+Если Inno Setup установлен, installer появится здесь:
+
+- `dist\installer\PCMonitoringSystemSetup-0.1.0.exe`
+
+Если Inno Setup не установлен, скрипт подскажет путь к `.iss` файлу и что
+нужно установить `ISCC.exe`.
+
+`start-dev.ps1` остаётся сценарием только для разработки. Для production и
+portable-запуска Vite не нужен.
+
+Для полного набора датчиков приложение желательно запускать от имени
+администратора.
+
+Portable launcher и installer не являются заменой dev-режиму, а работают
+поверх production backend + frontend build.
 
 ## Проверка проекта
 
