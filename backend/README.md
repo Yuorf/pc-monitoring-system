@@ -95,6 +95,32 @@ Production-интерфейс доступен по адресу:
 
 `start-dev.ps1` остаётся сценарием только для разработки.
 
+## Launcher / exe
+
+Сначала соберите production frontend:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-frontend.ps1
+```
+
+Проверка launcher из исходников:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-launcher-source.ps1
+```
+
+Сборка portable launcher через PyInstaller:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-launcher.ps1
+```
+
+Готовый exe будет лежать здесь:
+
+- `dist\PCMonitoringSystem\PCMonitoringSystem.exe`
+
+Это пока не инсталлер, а portable-сборка launcher.
+
 ## Проверка проекта
 
 Полная локальная проверка:
