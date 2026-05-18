@@ -470,6 +470,12 @@ textarea {
   color: #cbd5e1;
 }
 
+.charts-intro-note,
+.drive-subsection-note {
+  margin: 12px 0 0;
+  color: #94a3b8;
+}
+
 .spotlight-grid {
   display: grid;
   grid-template-columns: 1.2fr repeat(3, minmax(0, 1fr));
@@ -524,6 +530,16 @@ textarea {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 18px;
   margin-top: 18px;
+}
+
+.drive-subsection {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.drive-subsection-header {
+  margin-top: 0;
 }
 
 .drive-card {

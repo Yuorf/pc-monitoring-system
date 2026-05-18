@@ -135,6 +135,8 @@ const SSD_DETAIL_FIELDS = [
 const ML_RISK_NOTE =
   "Это не гарантия отказа, а оценка модели по SMART-признакам накопителя.";
 
+const EXTERNAL_DRIVE_MAX_SIZE_GB = 256;
+
 function formatStatusLabel(status) {
   if (!status) {
     return "Неизвестно";
@@ -301,13 +303,49 @@ function getStatusClass(status) {
   return `status-badge status-${status || "unknown"}`;
 }
 
+function getDriveMediaType(drive) {
+  return String(getObjectField(drive, "media_type", "type", "disk_type") || "")
+    .trim()
+    .toUpperCase();
+}
+
+function getDriveInterfaceType(drive) {
+  return String(getObjectField(drive, "interface", "interface_type", "bus_type") || "")
+    .trim()
+    .toUpperCase();
+}
+
+function getDriveSizeGbValue(drive) {
+  const sizeGb = getObjectField(drive, "size_gb", "capacity_gb");
+  if (sizeGb !== null && sizeGb !== undefined && !Number.isNaN(Number(sizeGb))) {
+    return Number(sizeGb);
+  }
+
+  const capacityBytes = getObjectField(drive, "capacity_bytes");
+  if (capacityBytes !== null && capacityBytes !== undefined && !Number.isNaN(Number(capacityBytes))) {
+    return Number(capacityBytes) / 1024 ** 3;
+  }
+
+  return null;
+}
+
+function isExternalDrive(drive) {
+  const mediaType = getDriveMediaType(drive);
+  const interfaceType = getDriveInterfaceType(drive);
+  const sizeGb = getDriveSizeGbValue(drive);
+  const hasUsbInterface = interfaceType.includes("USB") || interfaceType === "UAS";
+  const isSmallUnspecifiedDrive = (
+    (mediaType === "UNSPECIFIED" || mediaType === "UNKNOWN" || interfaceType === "SCSI")
+    && sizeGb !== null
+    && sizeGb <= EXTERNAL_DRIVE_MAX_SIZE_GB
+  );
+
+  return mediaType === "USB" || hasUsbInterface || isSmallUnspecifiedDrive;
+}
+
 function normalizeDriveType(drive) {
-  const mediaType = String(getObjectField(drive, "media_type", "type", "disk_type") || "")
-    .trim()
-    .toUpperCase();
-  const interfaceType = String(getObjectField(drive, "interface", "interface_type", "bus_type") || "")
-    .trim()
-    .toUpperCase();
+  const mediaType = getDriveMediaType(drive);
+  const interfaceType = getDriveInterfaceType(drive);
 
   if (mediaType === "HDD") {
     return "HDD";
@@ -349,21 +387,40 @@ function buildVisibleCharts(chartsPayload) {
   }
 
   const nextCharts = { ...chartsPayload };
-  const diskHealthChart = chartsPayload.disk_health;
+  const usageChart = chartsPayload.usage;
+  const temperaturesChart = chartsPayload.temperatures;
+  const coolingChart = chartsPayload.cooling;
 
-  if (
-    diskHealthChart
-    && Array.isArray(diskHealthChart.series)
-  ) {
-    const lifeSeries = diskHealthChart.series.filter((item) => item?.key === "disk_life");
-    nextCharts.disk_health = {
-      ...diskHealthChart,
-      title: "Ресурс накопителя, %",
-      unit: "%",
-      series: lifeSeries,
+  if (usageChart && Array.isArray(usageChart.series)) {
+    nextCharts.usage = {
+      ...usageChart,
+      series: usageChart.series.filter((item) => item?.key !== "disk_usage"),
     };
   }
 
+  if (temperaturesChart && Array.isArray(temperaturesChart.series)) {
+    nextCharts.temperatures = {
+      ...temperaturesChart,
+      series: temperaturesChart.series.map((item) => (
+        item?.key === "disk_temperature"
+          ? { ...item, name: "Накопитель" }
+          : item
+      )),
+    };
+  }
+
+  if (coolingChart && Array.isArray(coolingChart.series)) {
+    nextCharts.cooling = {
+      ...coolingChart,
+      series: coolingChart.series.map((item) => (
+        item?.key === "system_fan_rpm"
+          ? { ...item, name: "Системный вентилятор" }
+          : item
+      )),
+    };
+  }
+
+  delete nextCharts.disk_health;
   delete nextCharts.disk_runtime;
   return nextCharts;
 }
@@ -585,14 +642,17 @@ function getMlIndicatorLabel(mlPrediction) {
 function getDriveSummary(drives, mlPrediction) {
   const problematicDrives = drives.filter((drive) => isProblemDrive(drive, mlPrediction));
   const topDrive = problematicDrives[0] || null;
+  const hasTrackedPredictionSource = drives.some((drive) => isSameDrive(drive, mlPrediction?.source_drive));
 
   return {
     total: drives.length,
     problemCount: problematicDrives.length,
-    mlIndicator: getMlIndicatorLabel(mlPrediction),
+    mlIndicator: hasTrackedPredictionSource ? getMlIndicatorLabel(mlPrediction) : "нет данных",
     topReason: topDrive
       ? getDriveProblemReason(topDrive, mlPrediction)
-      : "Все накопители без признаков риска.",
+      : drives.length > 0
+        ? "Все основные накопители без признаков риска."
+        : "Основные накопители не обнаружены.",
   };
 }
 
@@ -800,6 +860,9 @@ function OverviewDriveCard({ summary }) {
 
       <div className="metric-details overview-drive-details">
         <ValuePair label="Накопителей" value={String(summary.total || 0)} />
+        {summary.externalCount > 0 ? (
+          <ValuePair label="Внешних устройств" value={String(summary.externalCount)} />
+        ) : null}
         <ValuePair label="Требуют внимания" value={String(summary.problemCount || 0)} />
         <ValuePair label="ML-индикатор" value={summary.mlIndicator} />
         <ValuePair label="Причина" value={summary.topReason} />
@@ -1221,6 +1284,8 @@ function App() {
   const mlPrediction = dashboard?.ml_prediction || {};
   const sourceDrive = mlPrediction?.source_drive || {};
   const drives = dashboard?.smart?.drives || [];
+  const primaryDrives = drives.filter((drive) => !isExternalDrive(drive));
+  const externalDrives = drives.filter((drive) => isExternalDrive(drive));
   const device = dashboard?.device || {};
   const configuration = dashboard?.configuration || {
     cpu: { name: device?.cpu || null },
@@ -1232,18 +1297,21 @@ function App() {
     motherboard: device?.motherboard || {},
     bios: device?.bios || {},
     os: device?.os || {},
-    drives_count: drives.length,
+    drives_count: primaryDrives.length,
   };
   const updatedAt = dashboard?.overall?.updated_at || charts?.updated_at;
   const lhmHealthState = getToolHealthState(externalTools?.libre_hardware_monitor);
   const smartctlHealthState = getToolHealthState(externalTools?.smartctl);
   const motherboardLabel = buildMotherboardLabel(configuration);
   const biosLabel = buildBiosLabel(configuration);
-  const configurationItems = buildConfigurationItems(configuration, drives.length, device);
-  const driveSummary = getDriveSummary(drives, mlPrediction);
+  const configurationItems = buildConfigurationItems(configuration, primaryDrives.length, device);
+  const driveSummary = {
+    ...getDriveSummary(primaryDrives, mlPrediction),
+    externalCount: externalDrives.length,
+  };
   const fallbackOverviewStatus = getOverviewStatus(
     componentCards,
-    drives,
+    primaryDrives,
     mlPrediction,
     health,
     healthChecks,
@@ -1290,7 +1358,9 @@ function App() {
       id: "drives",
       title: "Накопители",
       status: driveSummary.problemCount > 0 ? "warning" : "ok",
-      summary: `${driveSummary.total} шт.`,
+      summary: driveSummary.externalCount > 0
+        ? `${driveSummary.total} шт. · внешних: ${driveSummary.externalCount}`
+        : `${driveSummary.total} шт.`,
     },
     {
       id: "cooling",
@@ -1328,7 +1398,7 @@ function App() {
   ].filter(Boolean);
 
   const coolingCharts = [
-    buildFocusedChart(visibleCharts, "cooling", ["system_fan_rpm"], "Скорость системного вентилятора", "RPM"),
+    buildFocusedChart(visibleCharts, "cooling", ["system_fan_rpm"], "Системный вентилятор", "RPM"),
   ].filter(Boolean);
 
   function renderOverviewSection() {
@@ -1487,6 +1557,9 @@ function App() {
           </div>
           <div className="component-info-grid">
             <ValuePair label="Накопителей" value={String(driveSummary.total || 0)} />
+            {driveSummary.externalCount > 0 ? (
+              <ValuePair label="Внешних устройств" value={String(driveSummary.externalCount)} />
+            ) : null}
             <ValuePair label="Требуют внимания" value={String(driveSummary.problemCount || 0)} />
             <ValuePair label="ML-индикатор" value={driveSummary.mlIndicator} />
             <ValuePair label="Причина" value={driveSummary.topReason} />
@@ -1561,16 +1634,16 @@ function App() {
         <div className="panel-header">
           <div>
             <p className="eyebrow">Накопители</p>
-            <h3>Состояние накопителей</h3>
+            <h3>Основные накопители</h3>
           </div>
-          <span className="panel-count">{drives.length}</span>
+          <span className="panel-count">{primaryDrives.length}</span>
         </div>
 
-        {drives.length === 0 ? (
-          <p className="empty-state">Нет данных по накопителям.</p>
+        {primaryDrives.length === 0 ? (
+          <p className="empty-state">Нет данных по основным накопителям.</p>
         ) : (
           <div className="drives-grid">
-            {drives.map((drive, index) => (
+            {primaryDrives.map((drive, index) => (
               <DriveCard
                 key={`${getDriveKey(drive, index)}-${index}`}
                 drive={drive}
@@ -1580,6 +1653,31 @@ function App() {
             ))}
           </div>
         )}
+
+        {externalDrives.length > 0 ? (
+          <div className="drive-subsection">
+            <div className="panel-header drive-subsection-header">
+              <div>
+                <p className="eyebrow">Накопители</p>
+                <h3>Внешние устройства</h3>
+              </div>
+              <span className="panel-count">{externalDrives.length}</span>
+            </div>
+            <p className="empty-state drive-subsection-note">
+              В общей сводке они не учитываются как основные накопители ПК.
+            </p>
+            <div className="drives-grid">
+              {externalDrives.map((drive, index) => (
+                <DriveCard
+                  key={`${getDriveKey(drive, primaryDrives.length + index)}-${primaryDrives.length + index}`}
+                  drive={drive}
+                  index={primaryDrives.length + index}
+                  mlPrediction={mlPrediction}
+                />
+              ))}
+            </div>
+          </div>
+        ) : null}
       </section>
     );
   }
@@ -1661,8 +1759,14 @@ function App() {
       <div className="charts-stack">
         <section className="panel charts-intro-panel">
           <p className="charts-intro-text">
-            Это общий исторический обзор системных метрик. Он помогает увидеть динамику нагрузки,
-            температур, энергопотребления и состояния накопителя во времени.
+            Графики показывают историю основных агрегированных метрик. Исторические показатели
+            накопителей сейчас агрегированы и не строятся отдельно по каждому HDD или SSD.
+            Подробные SMART-показатели по каждому накопителю доступны в разделе Компоненты →
+            Накопители.
+          </p>
+          <p className="charts-intro-note">
+            SMART-ресурс и дополнительные показатели накопителей отображаются в разделе
+            Компоненты → Накопители.
           </p>
         </section>
         <section className="charts-grid">
