@@ -2,10 +2,17 @@ import json
 import os
 import re
 import subprocess
+import threading
+import time
+from copy import deepcopy
 from urllib.error import URLError
 from urllib.request import urlopen
 
-from app.services.external_tools_service import find_smartctl_executable
+from app.core.config import settings
+from app.services.external_tools_service import (
+    find_smartctl_executable,
+    get_hidden_subprocess_kwargs,
+)
 
 
 SOURCE_PRIORITY = {
@@ -93,6 +100,9 @@ WMI_ATTRIBUTE_TO_FIELD = {
     198: "offline_uncorrectable",
     199: "udma_crc_error_count",
 }
+SMART_DATA_CACHE_LOCK = threading.Lock()
+SMART_DATA_CACHE_PAYLOAD: dict[str, object] | None = None
+SMART_DATA_CACHE_TIMESTAMP: float | None = None
 
 
 def _to_string(value: object) -> str | None:
@@ -149,6 +159,7 @@ def _run_command(command: list[str], timeout: int = 10) -> str | None:
             text=True,
             timeout=timeout,
             check=False,
+            **get_hidden_subprocess_kwargs(),
         )
     except Exception:
         return None
@@ -1388,7 +1399,7 @@ def _collect_windows_smart_wmi() -> tuple[list[dict[str, object]], bool]:
     return drives, True
 
 
-def collect_smart_data() -> dict[str, object]:
+def _collect_smart_data_uncached() -> dict[str, object]:
     collectors = (
         ("smartctl", _collect_smartctl),
         ("windows_smart_wmi", _collect_windows_smart_wmi),
@@ -1425,3 +1436,27 @@ def collect_smart_data() -> dict[str, object]:
             "smartctl": collected_sources["smartctl"][1],
         },
     }
+
+
+def collect_smart_data() -> dict[str, object]:
+    global SMART_DATA_CACHE_PAYLOAD, SMART_DATA_CACHE_TIMESTAMP
+
+    cache_interval_seconds = max(settings.SMART_COLLECTION_INTERVAL_SECONDS, 0)
+    now = time.monotonic()
+
+    with SMART_DATA_CACHE_LOCK:
+        if (
+            SMART_DATA_CACHE_PAYLOAD is not None
+            and SMART_DATA_CACHE_TIMESTAMP is not None
+            and cache_interval_seconds > 0
+            and (now - SMART_DATA_CACHE_TIMESTAMP) < cache_interval_seconds
+        ):
+            return deepcopy(SMART_DATA_CACHE_PAYLOAD)
+
+    payload = _collect_smart_data_uncached()
+
+    with SMART_DATA_CACHE_LOCK:
+        SMART_DATA_CACHE_PAYLOAD = payload
+        SMART_DATA_CACHE_TIMESTAMP = now
+
+    return deepcopy(payload)

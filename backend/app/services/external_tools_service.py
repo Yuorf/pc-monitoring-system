@@ -117,6 +117,7 @@ def is_process_running(process_name: str) -> bool:
                 text=True,
                 timeout=5,
                 check=False,
+                **get_hidden_subprocess_kwargs(),
             )
             output = result.stdout.strip().lower()
             return bool(output) and process_name.lower() in output and "no tasks are running" not in output
@@ -127,6 +128,7 @@ def is_process_running(process_name: str) -> bool:
             text=True,
             timeout=5,
             check=False,
+            **get_hidden_subprocess_kwargs(),
         )
         target_name = process_name.lower()
         return any(
@@ -150,6 +152,22 @@ def _build_windows_startupinfo() -> subprocess.STARTUPINFO | None:
         getattr(subprocess, "SW_MINIMIZE", 6),
     )
     return startup_info
+
+
+def get_hidden_subprocess_kwargs() -> dict[str, object]:
+    if os.name != "nt":
+        return {}
+
+    kwargs: dict[str, object] = {}
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if creation_flags:
+        kwargs["creationflags"] = creation_flags
+
+    startup_info = _build_windows_startupinfo()
+    if startup_info is not None:
+        kwargs["startupinfo"] = startup_info
+
+    return kwargs
 
 
 def start_lhm_if_needed() -> dict[str, object]:
@@ -183,15 +201,12 @@ def start_lhm_if_needed() -> dict[str, object]:
         }
 
     try:
-        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-        startup_info = _build_windows_startupinfo()
         subprocess.Popen(
             [str(executable_path)],
             cwd=str(executable_path.parent),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=creation_flags,
-            startupinfo=startup_info,
+            **get_hidden_subprocess_kwargs(),
         )
         time.sleep(max(settings.LIBRE_HARDWARE_MONITOR_STARTUP_WAIT_SECONDS, 0.0))
         return {

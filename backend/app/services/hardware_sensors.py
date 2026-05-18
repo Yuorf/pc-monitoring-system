@@ -5,6 +5,8 @@ from datetime import datetime
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from app.services.external_tools_service import get_hidden_subprocess_kwargs
+
 
 NOISE_NAME_PARTS = (
     "resolution",
@@ -57,6 +59,7 @@ def _run_command(command: list[str], timeout: int = 5) -> str | None:
             text=True,
             timeout=timeout,
             check=True,
+            **get_hidden_subprocess_kwargs(),
         )
     except Exception:
         return None

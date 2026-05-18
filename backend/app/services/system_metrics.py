@@ -2,6 +2,8 @@ import subprocess
 
 import psutil
 
+from app.services.external_tools_service import get_hidden_subprocess_kwargs
+
 
 def _collect_gpu_usage() -> float | None:
     try:
@@ -22,6 +24,7 @@ def _collect_gpu_usage() -> float | None:
             text=True,
             timeout=5,
             check=True,
+            **get_hidden_subprocess_kwargs(),
         )
         output = result.stdout.strip()
         if not output:
