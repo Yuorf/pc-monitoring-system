@@ -31,6 +31,10 @@ READY_LOG_MARKERS = (
     "Application startup complete.",
     "Uvicorn running on",
 )
+ADMIN_REQUIRED_MESSAGE = (
+    "Для полного доступа к аппаратным датчикам и SMART-диагностике "
+    "приложение необходимо запустить с правами администратора."
+)
 
 
 def is_frozen() -> bool:
@@ -50,6 +54,54 @@ def show_error(title: str, message: str) -> None:
 
 def show_warning(message: str) -> None:
     print(f"Предупреждение: {message}", file=sys.stderr)
+
+
+def is_user_admin() -> bool:
+    if os.name != "nt":
+        return True
+
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def relaunch_as_admin() -> bool:
+    if os.name != "nt":
+        return False
+
+    executable = sys.executable
+    arguments = (
+        sys.argv[1:]
+        if is_frozen()
+        else [str(Path(__file__).resolve()), *sys.argv[1:]]
+    )
+    parameters = subprocess.list2cmdline(arguments)
+
+    try:
+        result = ctypes.windll.shell32.ShellExecuteW(
+            None,
+            "runas",
+            executable,
+            parameters,
+            None,
+            1,
+        )
+    except Exception:
+        return False
+
+    return result > 32
+
+
+def ensure_admin_rights() -> int | None:
+    if is_user_admin():
+        return None
+
+    if relaunch_as_admin():
+        return 0
+
+    show_error("PC Monitoring System", ADMIN_REQUIRED_MESSAGE)
+    return 1
 
 
 def iter_candidate_roots() -> list[Path]:
@@ -390,6 +442,9 @@ def run_launcher_mode() -> int:
 
 def main() -> int:
     try:
+        admin_result = ensure_admin_rights()
+        if admin_result is not None:
+            return admin_result
         if BACKEND_PROCESS_FLAG in sys.argv[1:]:
             return run_backend_mode()
         return run_launcher_mode()

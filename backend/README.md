@@ -131,6 +131,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-launcher.ps1
 .\dist\PCMonitoringSystem\PCMonitoringSystem.exe
 ```
 
+Launcher запрашивает повышение прав через стандартное окно UAC.
+Это нужно для полного доступа к аппаратным датчикам и SMART-диагностике.
+
 Для portable SMART желательно положить `smartctl.exe` в
 `backend/tools/smartmontools/bin`.
 

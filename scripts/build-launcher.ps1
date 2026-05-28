@@ -168,6 +168,7 @@ try {
     "--clean",
     "--onedir",
     "--windowed",
+    "--uac-admin",
     "--name", $launcherName,
     "--distpath", $distRoot,
     "--workpath", $workPath,
