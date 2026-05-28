@@ -2,9 +2,11 @@
 
 ## Структура проекта
 
-- `backend` — FastAPI backend
+- `backend` — FastAPI backend, API, база данных, сбор аппаратных данных и модуль прогнозирования
 - `frontend` — Vite/React frontend
-- `scripts` — PowerShell-скрипты для локального запуска и проверки
+- `launcher` — модуль запуска готового приложения
+- `installer` — файлы конфигурации установщика Windows
+- `scripts` — PowerShell-скрипты для локального запуска, проверки и сборки
 
 ## Локальный запуск
 
